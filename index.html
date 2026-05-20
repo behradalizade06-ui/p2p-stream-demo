@@ -16,6 +16,7 @@
       padding: 10px 16px;
       margin: 6px;
       font-size: 16px;
+      cursor: pointer;
     }
 
     video {
@@ -32,6 +33,28 @@
     #status {
       margin-top: 15px;
       font-weight: bold;
+      color: #0a5;
+    }
+
+    #error {
+      margin-top: 15px;
+      font-weight: bold;
+      color: red;
+    }
+
+    input {
+      width: 95%;
+      max-width: 700px;
+      padding: 10px;
+      margin: 6px 0;
+      font-size: 14px;
+    }
+
+    .box {
+      border: 1px solid #ccc;
+      padding: 15px;
+      margin-top: 15px;
+      border-radius: 8px;
     }
   </style>
 </head>
@@ -41,6 +64,23 @@
 <h2>Tablet Screen Stream</h2>
 
 <div id="status">Loading...</div>
+<div id="error"></div>
+
+<div id="setupBox" class="box" style="display:none;">
+  <h3>Setup</h3>
+
+  <p>Paste your Cloudflare tunnel URL:</p>
+
+  <input
+    id="serverInput"
+    placeholder="https://xxxxx.trycloudflare.com OR wss://xxxxx.trycloudflare.com"
+  >
+
+  <br>
+
+  <button onclick="openAsTablet()">Open as Tablet</button>
+  <button onclick="openAsClient()">Open as Client</button>
+</div>
 
 <button id="startTabletBtn" style="display:none;">Start Tablet Screen</button>
 
@@ -53,11 +93,14 @@
 <script>
 const params = new URLSearchParams(window.location.search);
 
-const role = params.get("role");
-const room = params.get("room") || "demo";
-const serverUrl = params.get("server");
+let role = params.get("role");
+let room = params.get("room") || "demo";
+let serverUrl = params.get("server");
 
 const statusBox = document.getElementById("status");
+const errorBox = document.getElementById("error");
+const setupBox = document.getElementById("setupBox");
+const serverInput = document.getElementById("serverInput");
 const startTabletBtn = document.getElementById("startTabletBtn");
 const localVideo = document.getElementById("localVideo");
 const remoteVideo = document.getElementById("remoteVideo");
@@ -78,6 +121,60 @@ function setStatus(text) {
   statusBox.innerText = text;
 }
 
+function setError(text) {
+  errorBox.innerText = text;
+}
+
+function normalizeServerUrl(url) {
+  if (!url) return null;
+
+  url = url.trim();
+
+  if (url.startsWith("https://")) {
+    return url.replace("https://", "wss://");
+  }
+
+  if (url.startsWith("http://")) {
+    return url.replace("http://", "ws://");
+  }
+
+  if (url.startsWith("wss://") || url.startsWith("ws://")) {
+    return url;
+  }
+
+  return "wss://" + url;
+}
+
+function buildUrl(newRole) {
+  const cleanServer = normalizeServerUrl(serverInput.value);
+
+  if (!cleanServer) {
+    alert("Insert Cloudflare tunnel URL first");
+    return null;
+  }
+
+  return (
+    window.location.origin +
+    window.location.pathname +
+    "?role=" +
+    encodeURIComponent(newRole) +
+    "&room=" +
+    encodeURIComponent(room) +
+    "&server=" +
+    encodeURIComponent(cleanServer)
+  );
+}
+
+function openAsTablet() {
+  const url = buildUrl("tablet");
+  if (url) window.location.href = url;
+}
+
+function openAsClient() {
+  const url = buildUrl("client");
+  if (url) window.location.href = url;
+}
+
 function send(data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(data));
@@ -86,9 +183,14 @@ function send(data) {
 
 function connectWebSocket() {
   if (!serverUrl) {
-    setStatus("Missing server URL");
+    setupBox.style.display = "block";
+    setStatus("Insert tunnel URL and choose Tablet or Client");
     return;
   }
+
+  serverUrl = normalizeServerUrl(serverUrl);
+
+  setStatus("Connecting to: " + serverUrl);
 
   ws = new WebSocket(serverUrl);
 
@@ -99,15 +201,16 @@ function connectWebSocket() {
       room
     });
 
-    setStatus("Connected to PC server");
+    setStatus("Connected to PC tunnel server");
   };
 
-  ws.onerror = () => {
-    setStatus("WebSocket error");
+  ws.onerror = (err) => {
+    console.error("WebSocket error:", err);
+    setError("WebSocket error. Check tunnel URL and server.js.");
   };
 
   ws.onclose = () => {
-    setStatus("Disconnected from PC server");
+    setStatus("Disconnected from PC tunnel server");
   };
 
   ws.onmessage = async (event) => {
@@ -122,7 +225,8 @@ function connectWebSocket() {
         const clientUrl =
           window.location.origin +
           window.location.pathname +
-          "?role=client&room=" +
+          "?role=client" +
+          "&room=" +
           encodeURIComponent(room) +
           "&server=" +
           encodeURIComponent(serverUrl);
@@ -130,7 +234,12 @@ function connectWebSocket() {
         qrTitle.style.display = "block";
         qrCanvas.style.display = "block";
 
-        QRCode.toCanvas(qrCanvas, clientUrl);
+        QRCode.toCanvas(qrCanvas, clientUrl, function (error) {
+          if (error) {
+            console.error(error);
+            setError("QR generation failed");
+          }
+        });
       }
 
       if (role === "client") {
@@ -153,6 +262,7 @@ function connectWebSocket() {
     if (msg.type === "answer") {
       if (role === "tablet") {
         const pc = peers[msg.clientId];
+
         if (pc) {
           await pc.setRemoteDescription(msg.answer);
         }
@@ -162,6 +272,7 @@ function connectWebSocket() {
     if (msg.type === "ice") {
       if (role === "tablet") {
         const pc = peers[msg.clientId];
+
         if (pc && msg.candidate) {
           await pc.addIceCandidate(msg.candidate);
         }
@@ -169,6 +280,7 @@ function connectWebSocket() {
 
       if (role === "client") {
         const pc = peers.main;
+
         if (pc && msg.candidate) {
           await pc.addIceCandidate(msg.candidate);
         }
@@ -198,11 +310,11 @@ async function startTabletScreen() {
     localVideo.srcObject = localStream;
     localVideo.style.display = "block";
 
-    setStatus("Tablet screen sharing active");
+    setStatus("Tablet screen sharing active. Clients can scan QR.");
 
   } catch (err) {
     console.error(err);
-    setStatus("Screen share failed");
+    setError("Screen share failed");
   }
 }
 
@@ -227,6 +339,10 @@ async function createOfferForClient(clientId) {
         candidate: event.candidate
       });
     }
+  };
+
+  pc.onconnectionstatechange = () => {
+    console.log("Client", clientId, "state:", pc.connectionState);
   };
 
   const offer = await pc.createOffer();
@@ -260,6 +376,18 @@ async function receiveOffer(offer) {
     }
   };
 
+  pc.onconnectionstatechange = () => {
+    console.log("Client WebRTC state:", pc.connectionState);
+
+    if (pc.connectionState === "connected") {
+      setStatus("P2P stream connected");
+    }
+
+    if (pc.connectionState === "failed") {
+      setError("P2P failed. This network may require TURN.");
+    }
+  };
+
   await pc.setRemoteDescription(offer);
 
   const answer = await pc.createAnswer();
@@ -271,14 +399,3 @@ async function receiveOffer(offer) {
   });
 }
 
-startTabletBtn.onclick = startTabletScreen;
-
-if (!role || !serverUrl) {
-  setStatus("Open with role and server parameters");
-} else {
-  connectWebSocket();
-}
-</script>
-
-</body>
-</html>
