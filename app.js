@@ -1,41 +1,77 @@
 let pc = new RTCPeerConnection();
 
+// When remote stream arrives
 pc.ontrack = (event) => {
   document.getElementById("remote").srcObject = event.streams[0];
 };
 
+// =====================
+// HOST
+// =====================
 async function startHost() {
-  const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-  document.getElementById("local").srcObject = stream;
+  try {
+    // Get camera
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    document.getElementById("local").srcObject = stream;
 
-  stream.getTracks().forEach(track => pc.addTrack(track, stream));
+    // Add tracks to connection
+    stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
-  let offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
+    // Create offer
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
 
-  let encoded = btoa(JSON.stringify(offer));
-  let url = window.location.origin + window.location.pathname + "?offer=" + encoded;
+    // Encode offer in URL
+    const encoded = btoa(JSON.stringify(offer));
+    const url = window.location.origin + window.location.pathname + "?offer=" + encoded;
 
-  QRCode.toCanvas(document.getElementById("qr"), url);
+    console.log("Host URL:", url);
 
-  alert("Scan QR with phone");
+    // Generate QR
+    const canvas = document.getElementById("qr");
+    QRCode.toCanvas(canvas, url, function (error) {
+      if (error) console.error(error);
+      else console.log("QR generated ✅");
+    });
+
+    alert("✅ QR Code ready — scan with phone");
+
+  } catch (err) {
+    console.error("Error in startHost:", err);
+    alert("Camera error or permission denied");
+  }
 }
 
+// =====================
+// CLIENT
+// =====================
 async function startClient() {
-  let params = new URLSearchParams(window.location.search);
-  let offer = params.get("offer");
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const offer = params.get("offer");
 
-  if (!offer) {
-    alert("No offer found in URL");
-    return;
+    if (!offer) {
+      alert("❌ No offer found in URL");
+      return;
+    }
+
+    // Decode offer
+    const decodedOffer = JSON.parse(atob(offer));
+    await pc.setRemoteDescription(decodedOffer);
+
+    // Create answer
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+
+    const encodedAnswer = btoa(JSON.stringify(answer));
+
+    console.log("Answer:", encodedAnswer);
+
+    // Show answer to user
+    alert("✅ Copy this and send back to Host:\n\n" + encodedAnswer);
+
+  } catch (err) {
+    console.error("Error in startClient:", err);
+    alert("Connection error");
   }
-
-  await pc.setRemoteDescription(JSON.parse(atob(offer)));
-
-  let answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-
-  let encodedAnswer = btoa(JSON.stringify(answer));
-
-  alert("Send this back to host:\n\n" + encodedAnswer);
 }
