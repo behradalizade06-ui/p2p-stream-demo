@@ -40,6 +40,7 @@
       margin-top: 15px;
       font-weight: bold;
       color: red;
+      white-space: pre-wrap;
     }
 
     input {
@@ -110,6 +111,7 @@ const qrTitle = document.getElementById("qrTitle");
 let ws;
 let localStream = null;
 let peers = {};
+let waitingClients = new Set();
 
 const rtcConfig = {
   iceServers: [
@@ -123,6 +125,10 @@ function setStatus(text) {
 
 function setError(text) {
   errorBox.innerText = text;
+}
+
+function clearError() {
+  errorBox.innerText = "";
 }
 
 function normalizeServerUrl(url) {
@@ -195,6 +201,8 @@ function connectWebSocket() {
   ws = new WebSocket(serverUrl);
 
   ws.onopen = () => {
+    clearError();
+
     send({
       type: "join",
       role,
@@ -218,7 +226,7 @@ function connectWebSocket() {
 
     if (msg.type === "joined") {
       if (role === "tablet") {
-        setStatus("Tablet connected. Start screen share.");
+        setStatus("Tablet connected. Press Start Tablet Screen.");
 
         startTabletBtn.style.display = "inline-block";
 
@@ -249,7 +257,12 @@ function connectWebSocket() {
 
     if (msg.type === "client-joined") {
       if (role === "tablet") {
-        await createOfferForClient(msg.clientId);
+        if (localStream) {
+          await createOfferForClient(msg.clientId);
+        } else {
+          waitingClients.add(msg.clientId);
+          setStatus("Client joined. Start tablet screen to stream.");
+        }
       }
     }
 
@@ -274,7 +287,11 @@ function connectWebSocket() {
         const pc = peers[msg.clientId];
 
         if (pc && msg.candidate) {
-          await pc.addIceCandidate(msg.candidate);
+          try {
+            await pc.addIceCandidate(msg.candidate);
+          } catch (err) {
+            console.error("Tablet ICE error:", err);
+          }
         }
       }
 
@@ -282,13 +299,19 @@ function connectWebSocket() {
         const pc = peers.main;
 
         if (pc && msg.candidate) {
-          await pc.addIceCandidate(msg.candidate);
+          try {
+            await pc.addIceCandidate(msg.candidate);
+          } catch (err) {
+            console.error("Client ICE error:", err);
+          }
         }
       }
     }
 
     if (msg.type === "client-left") {
       if (role === "tablet") {
+        waitingClients.delete(msg.clientId);
+
         const pc = peers[msg.clientId];
 
         if (pc) {
@@ -301,27 +324,65 @@ function connectWebSocket() {
 }
 
 async function startTabletScreen() {
+  clearError();
+
   try {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+      setError(
+        "Screen sharing is not supported in this browser/device.\n" +
+        "Try Chrome/Edge on desktop/tablet. Some mobile browsers block getDisplayMedia."
+      );
+      return;
+    }
+
     localStream = await navigator.mediaDevices.getDisplayMedia({
-      video: true,
+      video: {
+        frameRate: 30
+      },
       audio: false
     });
 
     localVideo.srcObject = localStream;
     localVideo.style.display = "block";
 
+    localStream.getVideoTracks()[0].onended = () => {
+      setStatus("Screen sharing stopped");
+      localStream = null;
+
+      Object.keys(peers).forEach(id => {
+        peers[id].close();
+        delete peers[id];
+      });
+    };
+
     setStatus("Tablet screen sharing active. Clients can scan QR.");
 
+    for (const clientId of waitingClients) {
+      await createOfferForClient(clientId);
+    }
+
+    waitingClients.clear();
+
   } catch (err) {
-    console.error(err);
-    setError("Screen share failed");
+    console.error("Screen share error:", err);
+
+    setError(
+      "Screen share failed.\n\n" +
+      "Reason: " + (err.message || err.name || err)
+    );
   }
 }
 
 async function createOfferForClient(clientId) {
   if (!localStream) {
-    setStatus("Client joined, but tablet screen is not started yet");
+    waitingClients.add(clientId);
+    setStatus("Client joined, but tablet screen is not started yet.");
     return;
+  }
+
+  if (peers[clientId]) {
+    peers[clientId].close();
+    delete peers[clientId];
   }
 
   const pc = new RTCPeerConnection(rtcConfig);
@@ -343,6 +404,14 @@ async function createOfferForClient(clientId) {
 
   pc.onconnectionstatechange = () => {
     console.log("Client", clientId, "state:", pc.connectionState);
+
+    if (pc.connectionState === "connected") {
+      setStatus("Streaming to client: " + clientId);
+    }
+
+    if (pc.connectionState === "failed") {
+      setError("P2P failed for client " + clientId + ". This network may require TURN.");
+    }
   };
 
   const offer = await pc.createOffer();
@@ -358,6 +427,13 @@ async function createOfferForClient(clientId) {
 }
 
 async function receiveOffer(offer) {
+  clearError();
+
+  if (peers.main) {
+    peers.main.close();
+    delete peers.main;
+  }
+
   const pc = new RTCPeerConnection(rtcConfig);
   peers.main = pc;
 
@@ -386,6 +462,10 @@ async function receiveOffer(offer) {
     if (pc.connectionState === "failed") {
       setError("P2P failed. This network may require TURN.");
     }
+
+    if (pc.connectionState === "disconnected") {
+      setStatus("P2P disconnected");
+    }
   };
 
   await pc.setRemoteDescription(offer);
@@ -399,3 +479,15 @@ async function receiveOffer(offer) {
   });
 }
 
+startTabletBtn.onclick = startTabletScreen;
+
+if (!role || !serverUrl) {
+  setupBox.style.display = "block";
+  setStatus("Insert tunnel URL and choose Tablet or Client");
+} else {
+  connectWebSocket();
+}
+</script>
+
+</body>
+</html>
