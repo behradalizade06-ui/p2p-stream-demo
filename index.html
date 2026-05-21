@@ -27,11 +27,12 @@
       font-size: 14px;
     }
 
-    video {
+    video, img {
       width: 100%;
       max-width: 900px;
       background: black;
       margin-top: 15px;
+      border: 1px solid #ccc;
     }
 
     #status {
@@ -57,6 +58,10 @@
 
     #qr {
       margin-top: 15px;
+    }
+
+    canvas {
+      display: none;
     }
   </style>
 </head>
@@ -91,7 +96,10 @@
 <canvas id="qr" style="display:none;"></canvas>
 
 <video id="localVideo" autoplay muted playsinline style="display:none;"></video>
-<video id="remoteVideo" autoplay playsinline controls style="display:none;"></video>
+
+<img id="remoteImage" style="display:none;" alt="Remote tablet screen">
+
+<canvas id="captureCanvas"></canvas>
 
 <script>
 const params = new URLSearchParams(window.location.search);
@@ -113,16 +121,18 @@ const qrTitle = document.getElementById("qrTitle");
 const qrCanvas = document.getElementById("qr");
 
 const localVideo = document.getElementById("localVideo");
-const remoteVideo = document.getElementById("remoteVideo");
+const remoteImage = document.getElementById("remoteImage");
+const captureCanvas = document.getElementById("captureCanvas");
+const captureCtx = captureCanvas.getContext("2d");
 
 let ws = null;
 let localStream = null;
-let recorder = null;
+let frameTimer = null;
+let lastImageUrl = null;
 
-let mediaSource = null;
-let sourceBuffer = null;
-let queue = [];
-let mediaReady = false;
+const FPS = 8;
+const JPEG_QUALITY = 0.65;
+const MAX_WIDTH = 1280;
 
 function setStatus(text) {
   statusBox.innerText = text;
@@ -226,7 +236,7 @@ function connectWebSocket() {
     setStatus("Disconnected from tunnel server");
   };
 
-  ws.onmessage = async (event) => {
+  ws.onmessage = (event) => {
     if (typeof event.data === "string") {
       const msg = JSON.parse(event.data);
 
@@ -236,19 +246,20 @@ function connectWebSocket() {
         }
 
         if (role === "client") {
-          setStatus("Client connected. Waiting for stream...");
+          setStatus("Client connected. Waiting for frames...");
         }
       }
 
       if (msg.type === "stream-start") {
         if (role === "client") {
-          startClientPlayer(msg.mimeType);
+          remoteImage.style.display = "block";
+          setStatus("Receiving tablet screen through Cloudflare tunnel...");
         }
       }
 
       if (msg.type === "stream-stop") {
         if (role === "client") {
-          stopClientPlayer();
+          stopClientViewer();
         }
       }
 
@@ -256,7 +267,7 @@ function connectWebSocket() {
     }
 
     if (role === "client") {
-      appendVideoChunk(event.data);
+      showFrame(event.data);
     }
   };
 }
@@ -292,7 +303,7 @@ async function startTabletScreen() {
 
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: {
-        frameRate: 20,
+        frameRate: FPS,
         width: { ideal: 1280 },
         height: { ideal: 720 }
       },
@@ -302,57 +313,21 @@ async function startTabletScreen() {
     localVideo.srcObject = localStream;
     localVideo.style.display = "block";
 
-    const mimeTypes = [
-      "video/webm;codecs=vp8",
-      "video/webm;codecs=vp9",
-      "video/webm"
-    ];
-
-    let mimeType = "";
-
-    for (const type of mimeTypes) {
-      if (MediaRecorder.isTypeSupported(type)) {
-        mimeType = type;
-        break;
-      }
-    }
-
-    if (!mimeType) {
-      setError("No supported MediaRecorder codec found.");
-      return;
-    }
+    await localVideo.play();
 
     sendJson({
       type: "stream-start",
-      mimeType: mimeType
+      mimeType: "image/jpeg"
     });
 
-    recorder = new MediaRecorder(localStream, {
-      mimeType: mimeType,
-      videoBitsPerSecond: 1200000
-    });
-
-    recorder.ondataavailable = async (event) => {
-      if (event.data && event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-        const buffer = await event.data.arrayBuffer();
-        ws.send(buffer);
-      }
-    };
-
-    recorder.onstop = () => {
-      sendJson({
-        type: "stream-stop"
-      });
-    };
+    startTabletBtn.style.display = "none";
+    stopTabletBtn.style.display = "inline-block";
 
     localStream.getVideoTracks()[0].onended = () => {
       stopTabletStream();
     };
 
-    recorder.start(250);
-
-    startTabletBtn.style.display = "none";
-    stopTabletBtn.style.display = "inline-block";
+    frameTimer = setInterval(sendFrame, 1000 / FPS);
 
     setStatus("Streaming tablet screen THROUGH CLOUDFLARE TUNNEL");
 
@@ -362,17 +337,47 @@ async function startTabletScreen() {
   }
 }
 
+function sendFrame() {
+  if (!localVideo.videoWidth || !localVideo.videoHeight) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+  let width = localVideo.videoWidth;
+  let height = localVideo.videoHeight;
+
+  if (width > MAX_WIDTH) {
+    const scale = MAX_WIDTH / width;
+    width = MAX_WIDTH;
+    height = Math.round(height * scale);
+  }
+
+  captureCanvas.width = width;
+  captureCanvas.height = height;
+
+  captureCtx.drawImage(localVideo, 0, 0, width, height);
+
+  captureCanvas.toBlob(async (blob) => {
+    if (!blob || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+    const buffer = await blob.arrayBuffer();
+    ws.send(buffer);
+  }, "image/jpeg", JPEG_QUALITY);
+}
+
 function stopTabletStream() {
-  if (recorder && recorder.state !== "inactive") {
-    recorder.stop();
+  if (frameTimer) {
+    clearInterval(frameTimer);
+    frameTimer = null;
   }
 
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
   }
 
-  recorder = null;
   localStream = null;
+
+  sendJson({
+    type: "stream-stop"
+  });
 
   startTabletBtn.style.display = "inline-block";
   stopTabletBtn.style.display = "none";
@@ -380,78 +385,30 @@ function stopTabletStream() {
   setStatus("Stream stopped");
 }
 
-function startClientPlayer(mimeType) {
-  clearError();
+function showFrame(arrayBuffer) {
+  const blob = new Blob([arrayBuffer], { type: "image/jpeg" });
+  const url = URL.createObjectURL(blob);
 
-  queue = [];
-  sourceBuffer = null;
-  mediaReady = false;
+  remoteImage.onload = () => {
+    if (lastImageUrl) {
+      URL.revokeObjectURL(lastImageUrl);
+    }
 
-  if (!window.MediaSource) {
-    setError("MediaSource not supported on this browser.");
-    return;
-  }
+    lastImageUrl = url;
+  };
 
-  if (!MediaSource.isTypeSupported(mimeType)) {
-    setError("Client browser does not support codec:\n" + mimeType);
-    return;
-  }
-
-  mediaSource = new MediaSource();
-
-  remoteVideo.src = URL.createObjectURL(mediaSource);
-  remoteVideo.style.display = "block";
-
-  mediaSource.addEventListener("sourceopen", () => {
-    sourceBuffer = mediaSource.addSourceBuffer(mimeType);
-    sourceBuffer.mode = "sequence";
-
-    sourceBuffer.addEventListener("updateend", processQueue);
-
-    mediaReady = true;
-    processQueue();
-
-    remoteVideo.play().catch(() => {});
-  });
-
-  setStatus("Receiving stream through Cloudflare tunnel...");
+  remoteImage.src = url;
+  remoteImage.style.display = "block";
 }
 
-function appendVideoChunk(chunk) {
-  if (!mediaReady || !sourceBuffer) {
-    queue.push(chunk);
-    return;
+function stopClientViewer() {
+  if (lastImageUrl) {
+    URL.revokeObjectURL(lastImageUrl);
+    lastImageUrl = null;
   }
 
-  queue.push(chunk);
-  processQueue();
-}
-
-function processQueue() {
-  if (!sourceBuffer || sourceBuffer.updating || queue.length === 0) {
-    return;
-  }
-
-  const chunk = queue.shift();
-
-  try {
-    sourceBuffer.appendBuffer(chunk);
-  } catch (err) {
-    console.error(err);
-    setError("Video buffer error:\n" + (err.message || err.name || err));
-  }
-}
-
-function stopClientPlayer() {
-  queue = [];
-  mediaReady = false;
-
-  if (remoteVideo.src) {
-    URL.revokeObjectURL(remoteVideo.src);
-  }
-
-  remoteVideo.removeAttribute("src");
-  remoteVideo.load();
+  remoteImage.removeAttribute("src");
+  remoteImage.style.display = "none";
 
   setStatus("Stream stopped");
 }
