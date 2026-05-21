@@ -10,15 +10,14 @@
     :root {
       --bg: #070b0a;
       --panel: #101715;
-      --panel-2: #16211e;
+      --panel2: #16211e;
       --green: #00b050;
-      --green-soft: #19d36f;
-      --green-dark: #00853e;
+      --green2: #19d36f;
+      --green3: #00853e;
       --text: #ffffff;
       --muted: #a8b8b2;
       --danger: #ff5c5c;
-      --border: rgba(255, 255, 255, 0.09);
-      --shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+      --border: rgba(255,255,255,0.1);
       --radius: 22px;
     }
 
@@ -29,33 +28,38 @@
     html,
     body {
       margin: 0;
+      width: 100%;
       min-height: 100%;
       background:
-        radial-gradient(circle at top left, rgba(0, 176, 80, 0.18), transparent 35%),
-        radial-gradient(circle at bottom right, rgba(0, 176, 80, 0.10), transparent 40%),
+        radial-gradient(circle at top left, rgba(0,176,80,0.18), transparent 35%),
+        radial-gradient(circle at bottom right, rgba(0,176,80,0.10), transparent 40%),
         var(--bg);
       color: var(--text);
-      font-family: Inter, Arial, Helvetica, sans-serif;
+      font-family: Arial, Helvetica, sans-serif;
       overflow-x: hidden;
     }
 
     body {
-      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+      padding:
+        env(safe-area-inset-top)
+        env(safe-area-inset-right)
+        env(safe-area-inset-bottom)
+        env(safe-area-inset-left);
     }
 
     .app {
       width: 100%;
       max-width: 1100px;
       margin: 0 auto;
-      padding: 22px;
+      padding: 18px;
     }
 
     .header {
       display: flex;
-      align-items: center;
       justify-content: space-between;
-      gap: 14px;
-      margin-bottom: 18px;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
     }
 
     .brand {
@@ -64,55 +68,53 @@
       gap: 12px;
     }
 
-    .logo-dot {
+    .dot {
       width: 18px;
       height: 18px;
       border-radius: 999px;
       background: var(--green);
-      box-shadow: 0 0 22px rgba(0, 176, 80, 0.85);
+      box-shadow: 0 0 22px rgba(0,176,80,0.85);
     }
 
     h1 {
       margin: 0;
-      font-size: clamp(24px, 5vw, 42px);
-      line-height: 1.05;
+      font-size: clamp(26px, 5vw, 42px);
       letter-spacing: -0.04em;
     }
 
     .subtitle {
-      margin-top: 8px;
+      margin-top: 6px;
       color: var(--muted);
-      font-size: 15px;
+      font-size: 14px;
     }
 
     .panel {
-      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015));
+      background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015));
       border: 1px solid var(--border);
       border-radius: var(--radius);
-      box-shadow: var(--shadow);
-      padding: 18px;
-      backdrop-filter: blur(14px);
+      padding: 16px;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.45);
     }
 
     .status {
-      margin: 16px 0;
+      margin: 12px 0;
       padding: 14px 16px;
       border-radius: 18px;
-      background: rgba(0, 176, 80, 0.10);
-      border: 1px solid rgba(0, 176, 80, 0.22);
-      color: var(--green-soft);
-      font-weight: 700;
+      background: rgba(0,176,80,0.10);
+      border: 1px solid rgba(0,176,80,0.25);
+      color: var(--green2);
+      font-weight: 800;
       white-space: pre-wrap;
     }
 
     .error {
-      margin: 16px 0;
+      margin: 12px 0;
       padding: 14px 16px;
       border-radius: 18px;
-      background: rgba(255, 92, 92, 0.10);
-      border: 1px solid rgba(255, 92, 92, 0.22);
+      background: rgba(255,92,92,0.10);
+      border: 1px solid rgba(255,92,92,0.25);
       color: var(--danger);
-      font-weight: 700;
+      font-weight: 800;
       white-space: pre-wrap;
       display: none;
     }
@@ -125,39 +127,25 @@
     }
 
     button {
-      appearance: none;
       border: 0;
       border-radius: 999px;
       padding: 13px 18px;
       font-size: 15px;
       font-weight: 800;
-      color: var(--text);
-      background: linear-gradient(135deg, var(--green), var(--green-dark));
-      box-shadow: 0 12px 28px rgba(0, 176, 80, 0.28);
+      color: white;
+      background: linear-gradient(135deg, var(--green), var(--green3));
+      box-shadow: 0 12px 28px rgba(0,176,80,0.28);
       cursor: pointer;
-      transition: transform 0.18s ease, opacity 0.18s ease, box-shadow 0.18s ease;
-    }
-
-    button:hover {
-      transform: translateY(-1px);
-      box-shadow: 0 16px 36px rgba(0, 176, 80, 0.36);
-    }
-
-    button:active {
-      transform: translateY(0);
-      opacity: 0.88;
     }
 
     button.secondary {
-      background: rgba(255, 255, 255, 0.08);
-      color: var(--text);
+      background: rgba(255,255,255,0.08);
       border: 1px solid var(--border);
       box-shadow: none;
     }
 
     button.danger {
       background: linear-gradient(135deg, #ff5c5c, #b51f1f);
-      box-shadow: 0 12px 28px rgba(255, 92, 92, 0.20);
     }
 
     input {
@@ -165,19 +153,18 @@
       padding: 15px 16px;
       margin: 8px 0 12px;
       font-size: 15px;
-      color: var(--text);
-      background: rgba(255, 255, 255, 0.06);
+      color: white;
+      background: rgba(255,255,255,0.06);
       border: 1px solid var(--border);
       border-radius: 16px;
       outline: none;
     }
 
     input:focus {
-      border-color: rgba(0, 176, 80, 0.75);
-      box-shadow: 0 0 0 4px rgba(0, 176, 80, 0.14);
+      border-color: rgba(0,176,80,0.75);
+      box-shadow: 0 0 0 4px rgba(0,176,80,0.14);
     }
 
-    label,
     p {
       color: var(--muted);
       margin: 0 0 8px;
@@ -188,26 +175,27 @@
       background: #000;
       border-radius: 24px;
       overflow: hidden;
-      border: 1px solid rgba(255,255,255,0.10);
-      box-shadow: var(--shadow);
-      min-height: 180px;
+      border: 1px solid rgba(255,255,255,0.12);
+      min-height: 220px;
       display: none;
       align-items: center;
       justify-content: center;
+      position: relative;
     }
 
     video,
     img {
       width: 100%;
       height: auto;
-      max-height: 78vh;
-      display: block;
+      max-height: 78dvh;
       background: #000;
+      display: block;
       object-fit: contain;
     }
 
     #remoteImage {
-      image-rendering: auto;
+      transform-origin: center center;
+      transition: transform 0.2s ease;
     }
 
     #qrWrap {
@@ -219,81 +207,97 @@
       display: inline-block;
       padding: 16px;
       border-radius: 22px;
-      background: #fff;
-    }
-
-    #qr {
-      display: block;
+      background: white;
     }
 
     #captureCanvas {
       display: none;
     }
 
-    .setup-title {
-      font-size: 20px;
-      font-weight: 900;
-      margin-bottom: 10px;
+    .viewer-toolbar {
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      bottom: calc(12px + env(safe-area-inset-bottom));
+      z-index: 999999;
+      display: none;
+      gap: 8px;
+      justify-content: center;
+      pointer-events: auto;
     }
 
-    .small {
+    .viewer-toolbar button {
+      padding: 11px 14px;
       font-size: 13px;
-      color: var(--muted);
-      margin-top: 10px;
+      background: rgba(0,176,80,0.92);
+      backdrop-filter: blur(10px);
     }
 
-    .fullscreen-mode {
+    .viewer:fullscreen {
       width: 100vw;
-      min-height: 100vh;
+      height: 100dvh;
       max-width: none;
-      padding: 12px;
-      background: #000;
-    }
-
-    .fullscreen-mode .header,
-    .fullscreen-mode #setupBox,
-    .fullscreen-mode #qrWrap,
-    .fullscreen-mode .controls.tablet-only {
-      display: none !important;
-    }
-
-    .fullscreen-mode .panel {
-      background: #000;
-      border: 0;
-      box-shadow: none;
-      padding: 0;
-    }
-
-    .fullscreen-mode .status,
-    .fullscreen-mode .error {
-      margin: 8px;
-    }
-
-    .fullscreen-mode .viewer {
-      display: flex !important;
-      height: calc(100vh - 90px);
+      max-height: none;
       margin: 0;
+      padding: 0;
       border-radius: 0;
       border: 0;
-      box-shadow: none;
+      background: #000;
+      display: flex !important;
     }
 
-    .fullscreen-mode img,
-    .fullscreen-mode video {
-      width: 100%;
-      height: 100%;
+    .viewer:fullscreen img,
+    .viewer:fullscreen video {
+      width: 100vw;
+      height: 100dvh;
+      max-height: none;
+      object-fit: contain;
+      background: #000;
+    }
+
+    .viewer.fullscreen-fallback {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100dvh;
+      z-index: 99999;
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+      background: #000;
+      display: flex !important;
+    }
+
+    .viewer.fullscreen-fallback img,
+    .viewer.fullscreen-fallback video {
+      width: 100vw;
+      height: 100dvh;
       max-height: none;
       object-fit: contain;
     }
 
-    @media (orientation: portrait) {
-      .app {
-        padding: 18px;
-      }
+    .viewer.cover img,
+    .viewer.cover video {
+      object-fit: cover;
+    }
 
+    .rotated {
+      transform: rotate(90deg);
+      width: 100dvh !important;
+      height: 100vw !important;
+      max-width: none !important;
+      max-height: none !important;
+      object-fit: contain;
+    }
+
+    .viewer.cover .rotated {
+      object-fit: cover;
+    }
+
+    @media (orientation: portrait) {
       .header {
-        align-items: flex-start;
         flex-direction: column;
+        align-items: flex-start;
       }
 
       .controls {
@@ -305,28 +309,12 @@
       }
 
       .viewer {
-        border-radius: 20px;
+        min-height: 60dvh;
       }
 
       video,
       img {
-        max-height: 70vh;
-      }
-    }
-
-    @media (max-width: 520px) {
-      .app {
-        padding: 16px;
-      }
-
-      .panel {
-        padding: 14px;
-        border-radius: 20px;
-      }
-
-      .status,
-      .error {
-        font-size: 14px;
+        max-height: 72dvh;
       }
     }
   </style>
@@ -334,17 +322,17 @@
 
 <body>
 
-<div id="app" class="app">
+<div class="app">
   <div class="header">
     <div>
       <div class="brand">
-        <div class="logo-dot"></div>
+        <div class="dot"></div>
         <h1>Screen Stream</h1>
       </div>
-      <div class="subtitle">Secure tunnel viewer · dark minimal interface</div>
+      <div class="subtitle">Tunnel viewer · dark minimal interface</div>
     </div>
 
-    <button class="secondary" onclick="toggleFullscreen()">Fullscreen</button>
+    <button class="secondary" onclick="enterViewerFullscreen()">Fullscreen</button>
   </div>
 
   <div class="panel">
@@ -352,7 +340,6 @@
     <div id="error" class="error"></div>
 
     <div id="setupBox" class="panel" style="display:none;">
-      <div class="setup-title">Setup</div>
       <p>Paste Cloudflare tunnel URL:</p>
 
       <input
@@ -364,13 +351,14 @@
         <button onclick="openAsTablet()">Open as Tablet</button>
         <button class="secondary" onclick="openAsClient()">Open as Client</button>
       </div>
-
-      <div class="small">Use the generated tablet URL from the terminal for the cleanest flow.</div>
     </div>
 
-    <div class="controls tablet-only">
+    <div class="controls">
       <button id="startTabletBtn" style="display:none;">Start Tablet Screen</button>
       <button id="stopTabletBtn" class="danger" style="display:none;">Stop Stream</button>
+      <button id="fullscreenBtn" class="secondary" style="display:none;" onclick="enterViewerFullscreen()">Fullscreen</button>
+      <button id="rotateBtn" class="secondary" style="display:none;" onclick="toggleRotate()">Rotate View</button>
+      <button id="fitBtn" class="secondary" style="display:none;" onclick="toggleFit()">Fit: Contain</button>
     </div>
 
     <div id="qrWrap">
@@ -392,14 +380,18 @@
   </div>
 </div>
 
+<div id="viewerToolbar" class="viewer-toolbar">
+  <button onclick="exitViewerFullscreen()">Exit</button>
+  <button onclick="toggleRotate()">Rotate</button>
+  <button onclick="toggleFit()">Fit</button>
+</div>
+
 <script>
 const params = new URLSearchParams(window.location.search);
 
 const role = params.get("role");
 const room = params.get("room") || "demo";
 let serverUrl = params.get("server");
-
-const app = document.getElementById("app");
 
 const setupBox = document.getElementById("setupBox");
 const serverInput = document.getElementById("serverInput");
@@ -409,12 +401,16 @@ const errorBox = document.getElementById("error");
 
 const startTabletBtn = document.getElementById("startTabletBtn");
 const stopTabletBtn = document.getElementById("stopTabletBtn");
+const fullscreenBtn = document.getElementById("fullscreenBtn");
+const rotateBtn = document.getElementById("rotateBtn");
+const fitBtn = document.getElementById("fitBtn");
 
 const qrWrap = document.getElementById("qrWrap");
 const qrCanvas = document.getElementById("qr");
 
 const localViewer = document.getElementById("localViewer");
 const remoteViewer = document.getElementById("remoteViewer");
+const viewerToolbar = document.getElementById("viewerToolbar");
 
 const localVideo = document.getElementById("localVideo");
 const remoteImage = document.getElementById("remoteImage");
@@ -425,6 +421,10 @@ const captureCtx = captureCanvas.getContext("2d");
 let ws = null;
 let localStream = null;
 let frameTimer = null;
+
+let rotated = false;
+let coverMode = false;
+let fallbackFullscreen = false;
 
 const FPS = 5;
 const JPEG_QUALITY = 0.55;
@@ -499,46 +499,80 @@ function openAsClient() {
   if (url) window.location.href = url;
 }
 
-async function toggleFullscreen() {
-  try {
-    if (!document.fullscreenElement) {
-      await document.documentElement.requestFullscreen();
-
-      app.classList.add("fullscreen-mode");
-
-      if (screen.orientation && screen.orientation.lock) {
-        try {
-          await screen.orientation.lock("portrait");
-        } catch (e) {
-          console.log("Portrait lock not available:", e);
-        }
-      }
-    } else {
-      await document.exitFullscreen();
-    }
-  } catch (err) {
-    console.log("Fullscreen error:", err);
-  }
-}
-
-document.addEventListener("fullscreenchange", () => {
-  if (document.fullscreenElement) {
-    app.classList.add("fullscreen-mode");
-  } else {
-    app.classList.remove("fullscreen-mode");
-
-    if (screen.orientation && screen.orientation.unlock) {
-      try {
-        screen.orientation.unlock();
-      } catch (e) {}
-    }
-  }
-});
-
 function sendJson(data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(data));
   }
+}
+
+async function enterViewerFullscreen() {
+  const viewer = role === "tablet" ? localViewer : remoteViewer;
+
+  viewer.style.display = "flex";
+  viewerToolbar.style.display = "flex";
+
+  try {
+    if (viewer.requestFullscreen) {
+      await viewer.requestFullscreen();
+    } else {
+      throw new Error("Fullscreen API unavailable");
+    }
+  } catch (err) {
+    fallbackFullscreen = true;
+    viewer.classList.add("fullscreen-fallback");
+  }
+
+  try {
+    if (screen.orientation && screen.orientation.lock) {
+      await screen.orientation.lock("portrait");
+    }
+  } catch (e) {
+    console.log("Orientation lock not available");
+  }
+}
+
+async function exitViewerFullscreen() {
+  viewerToolbar.style.display = "none";
+
+  if (document.fullscreenElement) {
+    await document.exitFullscreen();
+  }
+
+  localViewer.classList.remove("fullscreen-fallback");
+  remoteViewer.classList.remove("fullscreen-fallback");
+  fallbackFullscreen = false;
+}
+
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement) {
+    viewerToolbar.style.display = "none";
+    localViewer.classList.remove("fullscreen-fallback");
+    remoteViewer.classList.remove("fullscreen-fallback");
+    fallbackFullscreen = false;
+  } else {
+    viewerToolbar.style.display = "flex";
+  }
+});
+
+function toggleRotate() {
+  rotated = !rotated;
+
+  if (rotated) {
+    remoteImage.classList.add("rotated");
+    localVideo.classList.add("rotated");
+  } else {
+    remoteImage.classList.remove("rotated");
+    localVideo.classList.remove("rotated");
+  }
+}
+
+function toggleFit() {
+  coverMode = !coverMode;
+
+  localViewer.classList.toggle("cover", coverMode);
+  remoteViewer.classList.toggle("cover", coverMode);
+
+  fitBtn.innerText = coverMode ? "Fit: Cover" : "Fit: Contain";
 }
 
 function connectWebSocket() {
@@ -584,12 +618,18 @@ function connectWebSocket() {
 
       if (role === "client") {
         setStatus("Client connected. Waiting for stream...");
+        fullscreenBtn.style.display = "inline-block";
+        rotateBtn.style.display = "inline-block";
+        fitBtn.style.display = "inline-block";
       }
     }
 
     if (msg.type === "stream-start") {
       if (role === "client") {
         remoteViewer.style.display = "flex";
+        fullscreenBtn.style.display = "inline-block";
+        rotateBtn.style.display = "inline-block";
+        fitBtn.style.display = "inline-block";
         setStatus("Receiving screen through tunnel...");
       }
     }
@@ -615,6 +655,9 @@ function initTabletUi() {
   setStatus("Tablet connected. Press Start Tablet Screen.");
 
   startTabletBtn.style.display = "inline-block";
+  fullscreenBtn.style.display = "inline-block";
+  rotateBtn.style.display = "inline-block";
+  fitBtn.style.display = "inline-block";
 
   const clientUrl =
     window.location.origin +
