@@ -187,9 +187,20 @@
       transform-origin: center center;
     }
 
-    #localViewer,
+    #localViewer {
+      position: fixed;
+      left: -9999px;
+      top: -9999px;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+      pointer-events: none;
+    }
+
     #localVideo {
-      display: none !important;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
     }
 
     #remoteViewer {
@@ -400,8 +411,10 @@ let pendingClients = new Set();
 let rotated = false;
 
 const rtcConfig = {
-  iceTransportPolicy: "relay",
   iceServers: [
+    {
+      urls: "stun:stun.l.google.com:19302"
+    },
     {
       urls: "turn:openrelay.metered.ca:80",
       username: "openrelayproject",
@@ -702,16 +715,16 @@ async function startTabletScreen() {
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: {
         frameRate: 30,
-        width: { ideal: 1920 },
-        height: { ideal: 1080 }
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
       },
       audio: true
     });
 
     localVideo.srcObject = localStream;
     localVideo.muted = true;
-    localVideo.style.display = "none";
-    localViewer.style.display = "none";
+    localVideo.playsInline = true;
+    localViewer.style.display = "flex";
 
     try {
       await localVideo.play();
@@ -730,7 +743,7 @@ async function startTabletScreen() {
 
     pendingClients.clear();
 
-    setStatus("Streaming real WebRTC video/audio");
+    setStatus("Streaming WebRTC video/audio");
 
   } catch (err) {
     setError("Screen share failed:\n" + (err.message || err.name || err));
@@ -765,23 +778,33 @@ async function createOfferForClient(clientId) {
     }
   };
 
+  pc.oniceconnectionstatechange = () => {
+    console.log("Tablet ICE:", pc.iceConnectionState);
+  };
+
   pc.onconnectionstatechange = () => {
+    console.log("Tablet PC:", pc.connectionState);
+
     if (pc.connectionState === "connected") {
       setStatus("Streaming to client: " + clientId);
     }
 
     if (pc.connectionState === "failed") {
-      setError("WebRTC failed for client. TURN may be blocked or overloaded.");
+      setError("WebRTC failed for client.");
     }
   };
 
-  const offer = await pc.createOffer();
+  const offer = await pc.createOffer({
+    offerToReceiveAudio: false,
+    offerToReceiveVideo: false
+  });
+
   await pc.setLocalDescription(offer);
 
   send({
     type: "offer",
     clientId,
-    offer
+    offer: pc.localDescription
   });
 }
 
@@ -794,8 +817,11 @@ async function receiveOffer(offer) {
   peers.main = pc;
 
   pc.ontrack = async (event) => {
-    remoteVideo.srcObject = event.streams[0];
+    console.log("Remote track received:", event.track.kind);
 
+    const stream = event.streams[0];
+
+    remoteVideo.srcObject = stream;
     remoteVideo.autoplay = true;
     remoteVideo.playsInline = true;
     remoteVideo.controls = false;
@@ -803,9 +829,17 @@ async function receiveOffer(offer) {
 
     remoteViewer.style.display = "flex";
 
-    try {
-      await remoteVideo.play();
-    } catch {}
+    remoteVideo.onloadedmetadata = async () => {
+      try {
+        await remoteVideo.play();
+      } catch {}
+    };
+
+    event.track.onunmute = async () => {
+      try {
+        await remoteVideo.play();
+      } catch {}
+    };
 
     setStatus("Receiving WebRTC stream");
   };
@@ -819,13 +853,19 @@ async function receiveOffer(offer) {
     }
   };
 
+  pc.oniceconnectionstatechange = () => {
+    console.log("Client ICE:", pc.iceConnectionState);
+  };
+
   pc.onconnectionstatechange = () => {
+    console.log("Client PC:", pc.connectionState);
+
     if (pc.connectionState === "connected") {
       setStatus("WebRTC stream connected");
     }
 
     if (pc.connectionState === "failed") {
-      setError("WebRTC failed. TURN relay may be blocked.");
+      setError("WebRTC failed.");
     }
   };
 
@@ -836,7 +876,7 @@ async function receiveOffer(offer) {
 
   send({
     type: "answer",
-    answer
+    answer: pc.localDescription
   });
 }
 
