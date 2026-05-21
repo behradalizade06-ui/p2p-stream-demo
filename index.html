@@ -191,16 +191,17 @@
       position: fixed;
       left: -9999px;
       top: -9999px;
-      width: 1px;
-      height: 1px;
-      opacity: 0;
+      width: 320px;
+      height: 180px;
+      opacity: 0.01;
       pointer-events: none;
+      display: flex;
     }
 
     #localVideo {
-      width: 1px;
-      height: 1px;
-      opacity: 0;
+      width: 320px;
+      height: 180px;
+      opacity: 0.01;
     }
 
     #remoteViewer {
@@ -410,11 +411,13 @@ let peers = {};
 let pendingClients = new Set();
 let rotated = false;
 
+let clientIceQueue = [];
+let tabletIceQueues = {};
+
 const rtcConfig = {
   iceServers: [
-    {
-      urls: "stun:stun.l.google.com:19302"
-    },
+    { urls: "stun:stun.l.google.com:19302" },
+
     {
       urls: "turn:openrelay.metered.ca:80",
       username: "openrelayproject",
@@ -432,6 +435,11 @@ const rtcConfig = {
     },
     {
       urls: "turn:openrelay.metered.ca:443?transport=tcp",
+      username: "openrelayproject",
+      credential: "openrelayproject"
+    },
+    {
+      urls: "turns:openrelay.metered.ca:443?transport=tcp",
       username: "openrelayproject",
       credential: "openrelayproject"
     }
@@ -607,13 +615,8 @@ function connectWebSocket() {
     const msg = JSON.parse(event.data);
 
     if (msg.type === "joined") {
-      if (role === "tablet") {
-        initTabletUi();
-      }
-
-      if (role === "client") {
-        initClientUi();
-      }
+      if (role === "tablet") initTabletUi();
+      if (role === "client") initClientUi();
     }
 
     if (msg.type === "client-joined") {
@@ -639,6 +642,16 @@ function connectWebSocket() {
 
         if (pc) {
           await pc.setRemoteDescription(msg.answer);
+
+          if (tabletIceQueues[msg.clientId]) {
+            for (const c of tabletIceQueues[msg.clientId]) {
+              try {
+                await pc.addIceCandidate(c);
+              } catch {}
+            }
+
+            tabletIceQueues[msg.clientId] = [];
+          }
         }
       }
     }
@@ -647,20 +660,25 @@ function connectWebSocket() {
       if (role === "tablet") {
         const pc = peers[msg.clientId];
 
-        if (pc && msg.candidate) {
+        if (pc && pc.remoteDescription) {
           try {
             await pc.addIceCandidate(msg.candidate);
           } catch {}
+        } else {
+          if (!tabletIceQueues[msg.clientId]) tabletIceQueues[msg.clientId] = [];
+          tabletIceQueues[msg.clientId].push(msg.candidate);
         }
       }
 
       if (role === "client") {
         const pc = peers.main;
 
-        if (pc && msg.candidate) {
+        if (pc && pc.remoteDescription) {
           try {
             await pc.addIceCandidate(msg.candidate);
           } catch {}
+        } else {
+          clientIceQueue.push(msg.candidate);
         }
       }
     }
@@ -675,6 +693,8 @@ function connectWebSocket() {
           pc.close();
           delete peers[msg.clientId];
         }
+
+        delete tabletIceQueues[msg.clientId];
       }
     }
   };
@@ -724,6 +744,7 @@ async function startTabletScreen() {
     localVideo.srcObject = localStream;
     localVideo.muted = true;
     localVideo.playsInline = true;
+
     localViewer.style.display = "flex";
 
     try {
@@ -763,6 +784,7 @@ async function createOfferForClient(clientId) {
 
   const pc = new RTCPeerConnection(rtcConfig);
   peers[clientId] = pc;
+  tabletIceQueues[clientId] = [];
 
   localStream.getTracks().forEach(track => {
     pc.addTrack(track, localStream);
@@ -790,15 +812,11 @@ async function createOfferForClient(clientId) {
     }
 
     if (pc.connectionState === "failed") {
-      setError("WebRTC failed for client.");
+      setError("WebRTC failed for client. Try refreshing client QR page.");
     }
   };
 
-  const offer = await pc.createOffer({
-    offerToReceiveAudio: false,
-    offerToReceiveVideo: false
-  });
-
+  const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
 
   send({
@@ -813,15 +831,17 @@ async function receiveOffer(offer) {
     peers.main.close();
   }
 
+  clientIceQueue = [];
+
   const pc = new RTCPeerConnection(rtcConfig);
   peers.main = pc;
 
+  const remoteStream = new MediaStream();
+  remoteVideo.srcObject = remoteStream;
+
   pc.ontrack = async (event) => {
-    console.log("Remote track received:", event.track.kind);
+    remoteStream.addTrack(event.track);
 
-    const stream = event.streams[0];
-
-    remoteVideo.srcObject = stream;
     remoteVideo.autoplay = true;
     remoteVideo.playsInline = true;
     remoteVideo.controls = false;
@@ -829,11 +849,9 @@ async function receiveOffer(offer) {
 
     remoteViewer.style.display = "flex";
 
-    remoteVideo.onloadedmetadata = async () => {
-      try {
-        await remoteVideo.play();
-      } catch {}
-    };
+    try {
+      await remoteVideo.play();
+    } catch {}
 
     event.track.onunmute = async () => {
       try {
@@ -865,11 +883,19 @@ async function receiveOffer(offer) {
     }
 
     if (pc.connectionState === "failed") {
-      setError("WebRTC failed.");
+      setError("WebRTC failed. Refresh this client page and scan again.");
     }
   };
 
   await pc.setRemoteDescription(offer);
+
+  for (const c of clientIceQueue) {
+    try {
+      await pc.addIceCandidate(c);
+    } catch {}
+  }
+
+  clientIceQueue = [];
 
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);
@@ -886,6 +912,11 @@ function stopTabletStream() {
     delete peers[id];
   });
 
+  peers = {};
+  pendingClients.clear();
+  tabletIceQueues = {};
+  clientIceQueue = [];
+
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
   }
@@ -894,7 +925,6 @@ function stopTabletStream() {
 
   startTabletBtn.style.display = "inline-block";
   stopTabletBtn.style.display = "none";
-  localViewer.style.display = "none";
 
   setStatus("Stream stopped");
 }
