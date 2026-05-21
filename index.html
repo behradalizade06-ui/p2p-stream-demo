@@ -10,7 +10,6 @@
     :root {
       --bg: #070b0a;
       --panel: #101715;
-      --panel2: #16211e;
       --green: #00b050;
       --green2: #19d36f;
       --green3: #00853e;
@@ -160,11 +159,6 @@
       outline: none;
     }
 
-    input:focus {
-      border-color: rgba(0,176,80,0.75);
-      box-shadow: 0 0 0 4px rgba(0,176,80,0.14);
-    }
-
     p {
       color: var(--muted);
       margin: 0 0 8px;
@@ -184,7 +178,7 @@
     }
 
     video,
-    img {
+    canvas {
       width: 100%;
       height: auto;
       max-height: 78dvh;
@@ -193,7 +187,7 @@
       object-fit: contain;
     }
 
-    #remoteImage {
+    #remoteCanvas {
       transform-origin: center center;
       transition: transform 0.2s ease;
     }
@@ -246,7 +240,7 @@
       display: flex !important;
     }
 
-    .viewer:fullscreen img,
+    .viewer:fullscreen canvas,
     .viewer:fullscreen video {
       width: 100vw;
       height: 100dvh;
@@ -268,17 +262,12 @@
       display: flex !important;
     }
 
-    .viewer.fullscreen-fallback img,
+    .viewer.fullscreen-fallback canvas,
     .viewer.fullscreen-fallback video {
       width: 100vw;
       height: 100dvh;
       max-height: none;
       object-fit: contain;
-    }
-
-    .viewer.cover img,
-    .viewer.cover video {
-      object-fit: cover;
     }
 
     .rotated {
@@ -287,11 +276,7 @@
       height: 100vw !important;
       max-width: none !important;
       max-height: none !important;
-      object-fit: contain;
-    }
-
-    .viewer.cover .rotated {
-      object-fit: cover;
+      object-fit: contain !important;
     }
 
     @media (orientation: portrait) {
@@ -313,7 +298,7 @@
       }
 
       video,
-      img {
+      canvas {
         max-height: 72dvh;
       }
     }
@@ -358,7 +343,7 @@
       <button id="stopTabletBtn" class="danger" style="display:none;">Stop Stream</button>
       <button id="fullscreenBtn" class="secondary" style="display:none;" onclick="enterViewerFullscreen()">Fullscreen</button>
       <button id="rotateBtn" class="secondary" style="display:none;" onclick="toggleRotate()">Rotate View</button>
-      <button id="fitBtn" class="secondary" style="display:none;" onclick="toggleFit()">Fit: Contain</button>
+      <button id="audioBtn" class="secondary" style="display:none;" onclick="enableAudio()">Enable Audio</button>
     </div>
 
     <div id="qrWrap">
@@ -373,7 +358,7 @@
     </div>
 
     <div id="remoteViewer" class="viewer">
-      <img id="remoteImage" alt="Remote tablet screen">
+      <canvas id="remoteCanvas"></canvas>
     </div>
 
     <canvas id="captureCanvas"></canvas>
@@ -383,7 +368,7 @@
 <div id="viewerToolbar" class="viewer-toolbar">
   <button onclick="exitViewerFullscreen()">Exit</button>
   <button onclick="toggleRotate()">Rotate</button>
-  <button onclick="toggleFit()">Fit</button>
+  <button onclick="enableAudio()">Audio</button>
 </div>
 
 <script>
@@ -403,7 +388,7 @@ const startTabletBtn = document.getElementById("startTabletBtn");
 const stopTabletBtn = document.getElementById("stopTabletBtn");
 const fullscreenBtn = document.getElementById("fullscreenBtn");
 const rotateBtn = document.getElementById("rotateBtn");
-const fitBtn = document.getElementById("fitBtn");
+const audioBtn = document.getElementById("audioBtn");
 
 const qrWrap = document.getElementById("qrWrap");
 const qrCanvas = document.getElementById("qr");
@@ -413,22 +398,31 @@ const remoteViewer = document.getElementById("remoteViewer");
 const viewerToolbar = document.getElementById("viewerToolbar");
 
 const localVideo = document.getElementById("localVideo");
-const remoteImage = document.getElementById("remoteImage");
+const remoteCanvas = document.getElementById("remoteCanvas");
+const remoteCtx = remoteCanvas.getContext("2d");
 
 const captureCanvas = document.getElementById("captureCanvas");
 const captureCtx = captureCanvas.getContext("2d");
 
 let ws = null;
 let localStream = null;
-let frameTimer = null;
+let frameLoopActive = false;
 
 let rotated = false;
-let coverMode = false;
 let fallbackFullscreen = false;
 
-const FPS = 5;
-const JPEG_QUALITY = 0.55;
+let audioContext = null;
+let audioSource = null;
+let audioProcessor = null;
+let audioQueueTime = 0;
+let audioEnabled = false;
+
+const FPS = 12;
+const JPEG_QUALITY = 0.58;
 const MAX_WIDTH = 960;
+
+let lastFrameTime = 0;
+let frameInterval = 1000 / FPS;
 
 function setStatus(text) {
   statusBox.innerText = text;
@@ -526,9 +520,7 @@ async function enterViewerFullscreen() {
     if (screen.orientation && screen.orientation.lock) {
       await screen.orientation.lock("portrait");
     }
-  } catch (e) {
-    console.log("Orientation lock not available");
-  }
+  } catch (e) {}
 }
 
 async function exitViewerFullscreen() {
@@ -558,21 +550,32 @@ function toggleRotate() {
   rotated = !rotated;
 
   if (rotated) {
-    remoteImage.classList.add("rotated");
+    remoteCanvas.classList.add("rotated");
     localVideo.classList.add("rotated");
   } else {
-    remoteImage.classList.remove("rotated");
+    remoteCanvas.classList.remove("rotated");
     localVideo.classList.remove("rotated");
   }
 }
 
-function toggleFit() {
-  coverMode = !coverMode;
+async function enableAudio() {
+  try {
+    audioEnabled = true;
 
-  localViewer.classList.toggle("cover", coverMode);
-  remoteViewer.classList.toggle("cover", coverMode);
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    }
 
-  fitBtn.innerText = coverMode ? "Fit: Cover" : "Fit: Contain";
+    if (audioContext.state === "suspended") {
+      await audioContext.resume();
+    }
+
+    audioQueueTime = audioContext.currentTime + 0.15;
+
+    setStatus("Audio enabled");
+  } catch (err) {
+    setError("Audio enable failed:\n" + (err.message || err.name || err));
+  }
 }
 
 function connectWebSocket() {
@@ -620,7 +623,7 @@ function connectWebSocket() {
         setStatus("Client connected. Waiting for stream...");
         fullscreenBtn.style.display = "inline-block";
         rotateBtn.style.display = "inline-block";
-        fitBtn.style.display = "inline-block";
+        audioBtn.style.display = "inline-block";
       }
     }
 
@@ -629,21 +632,27 @@ function connectWebSocket() {
         remoteViewer.style.display = "flex";
         fullscreenBtn.style.display = "inline-block";
         rotateBtn.style.display = "inline-block";
-        fitBtn.style.display = "inline-block";
-        setStatus("Receiving screen through tunnel...");
+        audioBtn.style.display = "inline-block";
+        setStatus(msg.audio ? "Receiving video + audio through tunnel..." : "Receiving video through tunnel...");
       }
     }
 
     if (msg.type === "frame") {
       if (role === "client") {
-        remoteImage.src = msg.dataUrl;
+        drawRemoteFrame(msg.dataUrl);
         remoteViewer.style.display = "flex";
+      }
+    }
+
+    if (msg.type === "audio") {
+      if (role === "client" && audioEnabled) {
+        playAudioSamples(msg.samples, msg.sampleRate);
       }
     }
 
     if (msg.type === "stream-stop") {
       if (role === "client") {
-        remoteImage.removeAttribute("src");
+        clearRemoteCanvas();
         remoteViewer.style.display = "none";
         setStatus("Stream stopped");
       }
@@ -657,7 +666,6 @@ function initTabletUi() {
   startTabletBtn.style.display = "inline-block";
   fullscreenBtn.style.display = "inline-block";
   rotateBtn.style.display = "inline-block";
-  fitBtn.style.display = "inline-block";
 
   const clientUrl =
     window.location.origin +
@@ -688,7 +696,7 @@ async function startTabletScreen() {
         width: { ideal: 1280 },
         height: { ideal: 720 }
       },
-      audio: false
+      audio: true
     });
 
     localVideo.srcObject = localStream;
@@ -696,9 +704,16 @@ async function startTabletScreen() {
 
     await localVideo.play();
 
+    const hasAudio = localStream.getAudioTracks().length > 0;
+
     sendJson({
-      type: "stream-start"
+      type: "stream-start",
+      audio: hasAudio
     });
+
+    if (hasAudio) {
+      startAudioCapture(localStream);
+    }
 
     startTabletBtn.style.display = "none";
     stopTabletBtn.style.display = "inline-block";
@@ -707,14 +722,26 @@ async function startTabletScreen() {
       stopTabletStream();
     };
 
-    frameTimer = setInterval(sendFrame, 1000 / FPS);
+    frameLoopActive = true;
+    requestAnimationFrame(frameLoop);
 
-    setStatus("Streaming screen through tunnel");
+    setStatus(hasAudio ? "Streaming video + audio through tunnel" : "Streaming video through tunnel");
 
   } catch (err) {
     console.error(err);
     setError("Screen share failed:\n" + (err.message || err.name || err));
   }
+}
+
+function frameLoop(timestamp) {
+  if (!frameLoopActive) return;
+
+  if (timestamp - lastFrameTime >= frameInterval) {
+    lastFrameTime = timestamp;
+    sendFrame();
+  }
+
+  requestAnimationFrame(frameLoop);
 }
 
 function sendFrame() {
@@ -743,10 +770,95 @@ function sendFrame() {
   });
 }
 
+function drawRemoteFrame(dataUrl) {
+  const img = new Image();
+
+  img.onload = () => {
+    if (remoteCanvas.width !== img.naturalWidth || remoteCanvas.height !== img.naturalHeight) {
+      remoteCanvas.width = img.naturalWidth;
+      remoteCanvas.height = img.naturalHeight;
+    }
+
+    remoteCtx.drawImage(img, 0, 0, remoteCanvas.width, remoteCanvas.height);
+  };
+
+  img.src = dataUrl;
+}
+
+function clearRemoteCanvas() {
+  remoteCtx.clearRect(0, 0, remoteCanvas.width, remoteCanvas.height);
+}
+
+function startAudioCapture(stream) {
+  try {
+    const audioTracks = stream.getAudioTracks();
+
+    if (!audioTracks.length) return;
+
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    audioSource = ctx.createMediaStreamSource(new MediaStream(audioTracks));
+
+    audioProcessor = ctx.createScriptProcessor(2048, 1, 1);
+
+    audioProcessor.onaudioprocess = (event) => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      const input = event.inputBuffer.getChannelData(0);
+      const samples = new Array(input.length);
+
+      for (let i = 0; i < input.length; i++) {
+        samples[i] = Math.max(-1, Math.min(1, input[i]));
+      }
+
+      sendJson({
+        type: "audio",
+        sampleRate: ctx.sampleRate,
+        samples: samples
+      });
+    };
+
+    audioSource.connect(audioProcessor);
+    audioProcessor.connect(ctx.destination);
+  } catch (err) {
+    console.error("Audio capture error:", err);
+  }
+}
+
+function playAudioSamples(samples, sampleRate) {
+  if (!audioContext || !audioEnabled) return;
+
+  const buffer = audioContext.createBuffer(1, samples.length, sampleRate);
+  const channel = buffer.getChannelData(0);
+
+  for (let i = 0; i < samples.length; i++) {
+    channel[i] = samples[i];
+  }
+
+  const source = audioContext.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioContext.destination);
+
+  const now = audioContext.currentTime;
+
+  if (audioQueueTime < now) {
+    audioQueueTime = now + 0.08;
+  }
+
+  source.start(audioQueueTime);
+  audioQueueTime += buffer.duration;
+}
+
 function stopTabletStream() {
-  if (frameTimer) {
-    clearInterval(frameTimer);
-    frameTimer = null;
+  frameLoopActive = false;
+
+  if (audioProcessor) {
+    audioProcessor.disconnect();
+    audioProcessor = null;
+  }
+
+  if (audioSource) {
+    audioSource.disconnect();
+    audioSource = null;
   }
 
   if (localStream) {
