@@ -1,11 +1,9 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Ultra Low Latency Screen Stream</title>
+  <title>Ultra Low Lat-width, initial-scale=1.0, viewport-fit=cover">  <title>Ultra Low Latency Screen Stream</title>
 
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-
-  https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.jsscript>
+  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
 
   <style>
     :root {
@@ -30,7 +28,6 @@
       width: 100%;
       min-height: 100%;
       background:
-
         radial-gradient(circle at top left, rgba(0,176,80,0.18), transparent 35%),
         radial-gradient(circle at bottom right, rgba(0,176,80,0.10), transparent 40%),
         var(--bg);
@@ -176,10 +173,6 @@
       background: #000;
     }
 
-    #audioPlayer {
-      display: none;
-    }
-
     #hiddenVideo,
     #captureCanvas {
       position: fixed;
@@ -248,7 +241,7 @@
         <div class="dot"></div>
         <h1>Screen Stream</h1>
       </div>
-      <div class="subtitle">Binary video + audio optimized for low latency</div>
+      <div class="subtitle">Ultra-low-latency binary video + PCM audio</div>
     </div>
 
     <button class="secondary" onclick="fullscreenViewer()">Fullscreen</button>
@@ -289,8 +282,6 @@
     <div id="remoteViewer" class="viewer">
       <canvas id="remoteCanvas"></canvas>
     </div>
-
-    <audio id="audioPlayer" muted autoplay playsinline></audio>
   </div>
 </div>
 
@@ -322,8 +313,6 @@ const remoteViewer = document.getElementById("remoteViewer");
 const remoteCanvas = document.getElementById("remoteCanvas");
 const remoteCtx = remoteCanvas.getContext("2d", { alpha: false });
 
-const audioPlayer = document.getElementById("audioPlayer");
-
 const hiddenVideo = document.getElementById("hiddenVideo");
 const captureCanvas = document.getElementById("captureCanvas");
 const captureCtx = captureCanvas.getContext("2d", { alpha: false });
@@ -336,12 +325,15 @@ let seq = 0;
 let audioSeq = 0;
 let frameCount = 0;
 
-let audioRecorder = null;
-let audioMediaSource = null;
-let audioSourceBuffer = null;
-let audioQueue = [];
-let audioReady = false;
-let audioMime = null;
+let streamTimer = null;
+
+let audioCaptureCtx = null;
+let audioSourceNode = null;
+let audioProcessorNode = null;
+
+let audioPlayCtx = null;
+let audioUnlocked = false;
+let audioQueueTime = 0;
 
 const TYPE_VIDEO = 1;
 const TYPE_AUDIO = 2;
@@ -350,16 +342,16 @@ const VIDEO_HEADER_SIZE = 22;
 const AUDIO_HEADER_SIZE = 17;
 
 const TARGET_FPS = 24;
-const MAX_DELAY_MS = 750;
 const FRAME_INTERVAL = 1000 / TARGET_FPS;
+const MAX_DELAY_MS = 650;
 const MIME_TYPE = "image/jpeg";
 
 const profiles = [
-  { name: "LOWEST", maxWidth: 426, quality: 0.18, bufferLimit: 80 * 1024 },
-  { name: "LOW", maxWidth: 568, quality: 0.24, bufferLimit: 120 * 1024 },
-  { name: "FAST", maxWidth: 640, quality: 0.30, bufferLimit: 170 * 1024 },
-  { name: "BALANCED", maxWidth: 720, quality: 0.36, bufferLimit: 240 * 1024 },
-  { name: "DETAIL", maxWidth: 854, quality: 0.44, bufferLimit: 350 * 1024 }
+  { name: "LOWEST", maxWidth: 426, quality: 0.16, bufferLimit: 70 * 1024 },
+  { name: "LOW", maxWidth: 568, quality: 0.22, bufferLimit: 100 * 1024 },
+  { name: "FAST", maxWidth: 640, quality: 0.28, bufferLimit: 140 * 1024 },
+  { name: "BALANCED", maxWidth: 720, quality: 0.34, bufferLimit: 200 * 1024 },
+  { name: "DETAIL", maxWidth: 854, quality: 0.42, bufferLimit: 280 * 1024 }
 ];
 
 let profileIndex = 2;
@@ -367,7 +359,6 @@ let currentProfile = profiles[profileIndex];
 
 let lastFrameSentAt = 0;
 let lastAdaptAt = 0;
-let streamTimer = null;
 
 let feedbackAvgDelay = 0;
 let feedbackFps = 0;
@@ -381,6 +372,7 @@ let renderScheduled = false;
 
 if (role === "tablet") {
   startTabletBtn.style.display = "inline-block";
+  setStatus("Tablet mode detected. Connecting...");
 }
 
 function setStatus(text) {
@@ -490,10 +482,11 @@ function connectWebSocket() {
       if (msg.type === "stream-start") {
         if (role === "client") {
           remoteViewer.style.display = "flex";
-          setStatus("Receiving stream...");
+          setStatus("Receiving stream. Tap anywhere once for audio.");
 
-          if (msg.audio && msg.audioMime) {
-            startAudioPlayer(msg.audioMime);
+          if (msg.audio) {
+            audioBtn.style.display = "inline-block";
+            setupAudioUnlock();
           }
         }
       }
@@ -536,10 +529,10 @@ function initTablet() {
 
   qrWrap.style.display = "block";
 
-  try {
+  if (window.QRCode) {
     QRCode.toCanvas(qrCanvas, clientUrl);
-  } catch {
-    setError("QR generation failed, but streaming button is active.");
+  } else {
+    setError("QR library not loaded.\n\nClient URL:\n" + clientUrl);
   }
 }
 
@@ -549,6 +542,7 @@ function initClient() {
   audioBtn.style.display = "inline-block";
   remoteViewer.style.display = "flex";
   resizeRemoteCanvas();
+  setupAudioUnlock();
 }
 
 async function startTabletScreen() {
@@ -575,18 +569,16 @@ async function startTabletScreen() {
     });
 
     const hasAudio = localStream.getAudioTracks().length > 0;
-    audioMime = chooseAudioMime();
 
     streaming = true;
 
     sendJson({
       type: "stream-start",
-      audio: hasAudio && !!audioMime,
-      audioMime: hasAudio ? audioMime : null
+      audio: hasAudio
     });
 
-    if (hasAudio && audioMime) {
-      startAudioCapture(localStream, audioMime);
+    if (hasAudio) {
+      startAudioCapturePCM(localStream);
     }
 
     startTabletBtn.style.display = "none";
@@ -606,20 +598,51 @@ async function startTabletScreen() {
   }
 }
 
-function chooseAudioMime() {
-  const types = [
-    "audio/webm;codecs=opus",
-    "audio/webm"
-  ];
+function setupAudioUnlock() {
+  const unlock = async () => {
+    try {
+      if (!audioPlayCtx) {
+        audioPlayCtx = new (window.AudioContext || window.webkitAudioContext)({
+          latencyHint: "interactive"
+        });
+      }
 
-  for (const type of types) {
-    if (MediaRecorder.isTypeSupported(type)) return type;
-  }
+      if (audioPlayCtx.state === "suspended") {
+        await audioPlayCtx.resume();
+      }
 
-  return null;
+      audioUnlocked = true;
+      audioQueueTime = audioPlayCtx.currentTime + 0.03;
+
+    } catch {}
+  };
+
+  document.addEventListener("click", unlock, { passive: true });
+  document.addEventListener("touchstart", unlock, { passive: true });
 }
 
-function startAudioCapture(stream, mimeType) {
+async function enableAudio() {
+  try {
+    if (!audioPlayCtx) {
+      audioPlayCtx = new (window.AudioContext || window.webkitAudioContext)({
+        latencyHint: "interactive"
+      });
+    }
+
+    if (audioPlayCtx.state === "suspended") {
+      await audioPlayCtx.resume();
+    }
+
+    audioUnlocked = true;
+    audioQueueTime = audioPlayCtx.currentTime + 0.03;
+
+    setStatus("Audio enabled");
+  } catch (err) {
+    setError("Audio enable failed:\n" + (err.message || err.name || err));
+  }
+}
+
+function startAudioCapturePCM(stream) {
   try {
     const audioTracks = stream.getAudioTracks();
 
@@ -627,34 +650,45 @@ function startAudioCapture(stream, mimeType) {
 
     const audioStream = new MediaStream(audioTracks);
 
-    audioRecorder = new MediaRecorder(audioStream, {
-      mimeType
+    audioCaptureCtx = new (window.AudioContext || window.webkitAudioContext)({
+      latencyHint: "interactive"
     });
 
-    audioRecorder.ondataavailable = async (event) => {
-      if (!event.data || event.data.size === 0) return;
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      if (ws.bufferedAmount > 300 * 1024) return;
+    audioSourceNode = audioCaptureCtx.createMediaStreamSource(audioStream);
+    audioProcessorNode = audioCaptureCtx.createScriptProcessor(1024, 1, 1);
 
-      const audioBuffer = await event.data.arrayBuffer();
+    const silentGain = audioCaptureCtx.createGain();
+    silentGain.gain.value = 0;
+
+    audioProcessorNode.onaudioprocess = (event) => {
+      if (!streaming) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (ws.bufferedAmount > 250 * 1024) return;
+
+      const input = event.inputBuffer.getChannelData(0);
+      const samples = new Float32Array(input.length);
+      samples.set(input);
 
       audioSeq++;
 
-      const packet = new ArrayBuffer(AUDIO_HEADER_SIZE + audioBuffer.byteLength);
+      const packet = new ArrayBuffer(AUDIO_HEADER_SIZE + samples.byteLength);
       const view = new DataView(packet);
       const bytes = new Uint8Array(packet);
 
       view.setUint8(0, TYPE_AUDIO);
       view.setUint32(1, audioSeq);
       view.setFloat64(5, Date.now());
-      view.setUint32(13, audioBuffer.byteLength);
+      view.setUint32(13, audioCaptureCtx.sampleRate);
 
-      bytes.set(new Uint8Array(audioBuffer), AUDIO_HEADER_SIZE);
+      bytes.set(new Uint8Array(samples.buffer), AUDIO_HEADER_SIZE);
 
       ws.send(packet);
     };
 
-    audioRecorder.start(200);
+    audioSourceNode.connect(audioProcessorNode);
+    audioProcessorNode.connect(silentGain);
+    silentGain.connect(audioCaptureCtx.destination);
+
   } catch (err) {
     console.error("Audio capture failed:", err);
   }
@@ -730,7 +764,7 @@ function receiveBinaryPacket(arrayBuffer) {
   }
 
   if (packetType === TYPE_AUDIO) {
-    receiveAudioChunk(arrayBuffer);
+    receiveAudioPCM(arrayBuffer);
     return;
   }
 }
@@ -738,11 +772,7 @@ function receiveBinaryPacket(arrayBuffer) {
 function receiveVideoFrame(arrayBuffer) {
   const view = new DataView(arrayBuffer);
 
-  const frameSeq = view.getUint32(1);
   const sentAt = view.getFloat64(5);
-  const width = view.getUint16(13);
-  const height = view.getUint16(15);
-  const profile = view.getUint8(17);
   const payloadSize = view.getUint32(18);
 
   const delay = Date.now() - sentAt;
@@ -761,11 +791,6 @@ function receiveVideoFrame(arrayBuffer) {
   const payload = arrayBuffer.slice(VIDEO_HEADER_SIZE, VIDEO_HEADER_SIZE + payloadSize);
 
   latestPacket = {
-    seq: frameSeq,
-    sentAt,
-    width,
-    height,
-    profile,
     payload
   };
 
@@ -804,83 +829,81 @@ async function renderLatestPacket() {
   } catch {}
 }
 
-function startAudioPlayer(mimeType) {
-  if (!window.MediaSource) return;
-
-  audioQueue = [];
-  audioReady = false;
-  audioSourceBuffer = null;
-
-  audioMediaSource = new MediaSource();
-  audioPlayer.src = URL.createObjectURL(audioMediaSource);
-  audioPlayer.muted = true;
-  audioPlayer.autoplay = true;
-
-  audioMediaSource.addEventListener("sourceopen", () => {
-    try {
-      audioSourceBuffer = audioMediaSource.addSourceBuffer(mimeType);
-      audioSourceBuffer.mode = "sequence";
-      audioSourceBuffer.addEventListener("updateend", processAudioQueue);
-      audioReady = true;
-      processAudioQueue();
-    } catch (err) {
-      console.error("Audio SourceBuffer failed:", err);
-    }
-  });
-}
-
-function receiveAudioChunk(arrayBuffer) {
-  if (!audioReady || !audioSourceBuffer) return;
+function receiveAudioPCM(arrayBuffer) {
+  if (!audioUnlocked || !audioPlayCtx) return;
 
   const view = new DataView(arrayBuffer);
+
   const sentAt = view.getFloat64(5);
-  const payloadSize = view.getUint32(13);
+  const sampleRate = view.getUint32(13);
 
   const delay = Date.now() - sentAt;
 
-  if (delay > 1500) return;
+  if (delay > 800) return;
 
-  const payload = arrayBuffer.slice(AUDIO_HEADER_SIZE, AUDIO_HEADER_SIZE + payloadSize);
+  const payload = arrayBuffer.slice(AUDIO_HEADER_SIZE);
+  const samples = new Float32Array(payload);
 
-  audioQueue.push(payload);
+  if (!samples.length) return;
 
-  if (audioQueue.length > 10) {
-    audioQueue.shift();
+  const buffer = audioPlayCtx.createBuffer(1, samples.length, sampleRate);
+  buffer.copyToChannel(samples, 0);
+
+  const source = audioPlayCtx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(audioPlayCtx.destination);
+
+  const now = audioPlayCtx.currentTime;
+
+  if (audioQueueTime < now) {
+    audioQueueTime = now + 0.02;
   }
 
-  processAudioQueue();
-}
-
-function processAudioQueue() {
-  if (!audioSourceBuffer || audioSourceBuffer.updating || audioQueue.length === 0) return;
+  if (audioQueueTime - now > 0.25) {
+    audioQueueTime = now + 0.02;
+  }
 
   try {
-    const chunk = audioQueue.shift();
-    audioSourceBuffer.appendBuffer(chunk);
+    source.start(audioQueueTime);
+    audioQueueTime += buffer.duration;
   } catch {}
 }
 
-async function enableAudio() {
-  try {
-    audioPlayer.muted = false;
-    audioPlayer.volume = 1;
-    await audioPlayer.play();
-    setStatus("Audio enabled");
-  } catch (err) {
-    setError("Audio enable failed:\n" + (err.message || err.name || err));
+function stopAudioPlayer() {
+  audioUnlocked = false;
+  audioQueueTime = 0;
+
+  if (audioPlayCtx) {
+    try {
+      audioPlayCtx.close();
+    } catch {}
   }
+
+  audioPlayCtx = null;
 }
 
-function stopAudioPlayer() {
-  audioQueue = [];
-  audioReady = false;
-
-  if (audioPlayer.src) {
-    URL.revokeObjectURL(audioPlayer.src);
+function stopAudioCapture() {
+  if (audioProcessorNode) {
+    try {
+      audioProcessorNode.disconnect();
+    } catch {}
   }
 
-  audioPlayer.removeAttribute("src");
-  audioPlayer.load();
+  if (audioSourceNode) {
+    try {
+      audioSourceNode.disconnect();
+    } catch {}
+  }
+
+  if (audioCaptureCtx) {
+    try {
+      audioCaptureCtx.close();
+    } catch {}
+  }
+
+  audioProcessorNode = null;
+  audioSourceNode = null;
+  audioCaptureCtx = null;
 }
 
 function sendFeedbackIfNeeded(lastDelay) {
@@ -913,21 +936,21 @@ function handleFeedback(msg) {
 
   lastAdaptAt = now;
 
-  if (msg.avgDelay > 700 || msg.receivedFps < 20) {
+  if (msg.avgDelay > 650 || msg.receivedFps < 20) {
     profileIndex = Math.max(0, profileIndex - 2);
     currentProfile = profiles[profileIndex];
     updateTabletStatus("Aggressive downgrade");
     return;
   }
 
-  if (msg.avgDelay > 450 || msg.receivedFps < 22) {
+  if (msg.avgDelay > 400 || msg.receivedFps < 22) {
     profileIndex = Math.max(0, profileIndex - 1);
     currentProfile = profiles[profileIndex];
     updateTabletStatus("Downgrade");
     return;
   }
 
-  if (msg.avgDelay < 180 && msg.receivedFps >= 23) {
+  if (msg.avgDelay < 160 && msg.receivedFps >= 23) {
     profileIndex = Math.min(profiles.length - 1, profileIndex + 1);
     currentProfile = profiles[profileIndex];
     updateTabletStatus("Upgrade");
@@ -939,7 +962,7 @@ function handleFeedback(msg) {
 
 function updateTabletStatus(reason) {
   setStatus(
-    "Streaming binary low latency\n" +
+    "Streaming low latency\n" +
     "Target FPS: 24\n" +
     "Profile: " + currentProfile.name + "\n" +
     "Width: " + currentProfile.maxWidth + "\n" +
@@ -997,11 +1020,7 @@ function stopTabletStream() {
     streamTimer = null;
   }
 
-  if (audioRecorder && audioRecorder.state !== "inactive") {
-    audioRecorder.stop();
-  }
-
-  audioRecorder = null;
+  stopAudioCapture();
 
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
@@ -1021,6 +1040,8 @@ function stopTabletStream() {
 }
 
 async function fullscreenViewer() {
+  await enableAudio();
+
   remoteViewer.style.display = "flex";
   resizeRemoteCanvas();
 
@@ -1048,27 +1069,3 @@ if (!role || !serverUrl) {
 
 </body>
 </html>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-
-  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
-
-  <style>
-    :root {
-      --bg: #070b0a;
-      --green: #00b050;
-      --green2: #19d36f;
-      --green3: #00853e;
-      --text: #ffffff;
-      --muted: #a8b8b2;
-      --danger: #ff5c5c;
-      --border: rgba(255,255,255,0.1);
-      --radius: 22px;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    html,
-    body {
-      margin: 0;
