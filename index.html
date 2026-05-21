@@ -2,11 +2,7 @@
 <html>
 <head>
   <title>Adaptive X1 Screen Stream</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-
-  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js<style>
-    :root {
-      --bg: #070b0a;
+  <meta0a;  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
       --green: #00b050;
       --green2: #19d36f;
       --green3: #00853e;
@@ -389,7 +385,6 @@ let clientServerDrops = 0;
 let clientLastFeedbackAt = performance.now();
 let latestFrame = null;
 let renderScheduled = false;
-let streamTimer = null;
 
 if (role === "tablet") {
   startTabletBtn.style.display = "inline-block";
@@ -599,11 +594,7 @@ async function startTabletScreen() {
       stopTabletStream();
     };
 
-    if (streamTimer) {
-      clearInterval(streamTimer);
-    }
-
-    streamTimer = setInterval(sendFixedRateFrame, FRAME_INTERVAL);
+    setInterval(sendFixedRateFrame, FRAME_INTERVAL);
 
     updateTabletStatus("Started");
 
@@ -844,11 +835,6 @@ function clearRemote() {
 function stopTabletStream() {
   streaming = false;
 
-  if (streamTimer) {
-    clearInterval(streamTimer);
-    streamTimer = null;
-  }
-
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
   }
@@ -905,3 +891,8 @@ if (!role || !serverUrl) {
 
 </body>
 </html>
+
+  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+
+  <style>
+    :root {
