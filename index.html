@@ -2,9 +2,7 @@
 <html>
 <head>
   <title>Low Latency Screen Stream</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-
-  https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.jsscript>
+  <meta.net/npm/qrcode/build/qrcode.min.js"></script>  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
   <style>
     :root {
@@ -242,7 +240,7 @@
         <div class="dot"></div>
         <h1>Screen Stream</h1>
       </div>
-      <div class="subtitle">Binary tunnel stream optimized for low latency</div>
+      <div class="subtitle">Binary stream optimized for low latency</div>
     </div>
 
     <button class="secondary" onclick="fullscreenViewer()">Fullscreen</button>
@@ -320,22 +318,21 @@ let ws = null;
 let localStream = null;
 let streaming = false;
 let encoding = false;
-let frameCount = 0;
-let lastImage = null;
 let seq = 0;
+let frameCount = 0;
 
 const HEADER_SIZE = 24;
 const TARGET_FPS = 24;
-const MAX_DELAY_MS = 1000;
+const MAX_DELAY_MS = 900;
 const FRAME_INTERVAL = 1000 / TARGET_FPS;
 const MIME_TYPE = "image/jpeg";
 
 const profiles = [
-  { name: "P0_EMERGENCY", maxWidth: 426, quality: 0.22, bufferLimit: 120 * 1024 },
-  { name: "P1_ULTRA_FLUID", maxWidth: 568, quality: 0.28, bufferLimit: 180 * 1024 },
-  { name: "P2_FAST", maxWidth: 640, quality: 0.34, bufferLimit: 250 * 1024 },
-  { name: "P3_BALANCED", maxWidth: 720, quality: 0.40, bufferLimit: 350 * 1024 },
-  { name: "P4_DETAIL", maxWidth: 854, quality: 0.48, bufferLimit: 500 * 1024 }
+  { name: "LOWEST", maxWidth: 426, quality: 0.20, bufferLimit: 100 * 1024 },
+  { name: "LOW", maxWidth: 568, quality: 0.26, bufferLimit: 150 * 1024 },
+  { name: "FAST", maxWidth: 640, quality: 0.32, bufferLimit: 220 * 1024 },
+  { name: "BALANCED", maxWidth: 720, quality: 0.38, bufferLimit: 300 * 1024 },
+  { name: "DETAIL", maxWidth: 854, quality: 0.46, bufferLimit: 420 * 1024 }
 ];
 
 let profileIndex = 2;
@@ -343,9 +340,9 @@ let currentProfile = profiles[profileIndex];
 
 let lastFrameSentAt = 0;
 let lastAdaptAt = 0;
+let streamTimer = null;
 
 let feedbackAvgDelay = 0;
-let feedbackLastDelay = 0;
 let feedbackFps = 0;
 
 let clientDelaySamples = [];
@@ -354,7 +351,6 @@ let clientLastFeedbackAt = performance.now();
 
 let latestPacket = null;
 let renderScheduled = false;
-let streamTimer = null;
 
 if (role === "tablet") {
   startTabletBtn.style.display = "inline-block";
@@ -472,9 +468,7 @@ function connectWebSocket() {
       }
 
       if (msg.type === "feedback") {
-        if (role === "tablet") {
-          handleFeedback(msg);
-        }
+        if (role === "tablet") handleFeedback(msg);
       }
 
       if (msg.type === "stream-stop") {
@@ -560,10 +554,7 @@ async function startTabletScreen() {
       stopTabletStream();
     };
 
-    if (streamTimer) {
-      clearInterval(streamTimer);
-    }
-
+    if (streamTimer) clearInterval(streamTimer);
     streamTimer = setInterval(sendFixedRateFrame, FRAME_INTERVAL);
 
     updateTabletStatus("Started");
@@ -578,9 +569,7 @@ function sendFixedRateFrame() {
 
   const now = performance.now();
 
-  if (now - lastFrameSentAt < FRAME_INTERVAL * 0.75) {
-    return;
-  }
+  if (now - lastFrameSentAt < FRAME_INTERVAL * 0.75) return;
 
   lastFrameSentAt = now;
   sendFrame();
@@ -591,9 +580,7 @@ function sendFrame() {
   if (!hiddenVideo.videoWidth || !hiddenVideo.videoHeight) return;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
-  if (ws.bufferedAmount > currentProfile.bufferLimit) {
-    return;
-  }
+  if (ws.bufferedAmount > currentProfile.bufferLimit) return;
 
   encoding = true;
 
@@ -608,7 +595,6 @@ function sendFrame() {
 
   captureCanvas.width = width;
   captureCanvas.height = height;
-
   captureCtx.drawImage(hiddenVideo, 0, 0, width, height);
 
   captureCanvas.toBlob(async (blob) => {
@@ -648,8 +634,7 @@ function receiveBinaryFrame(arrayBuffer) {
   const profile = view.getUint8(16);
   const payloadSize = view.getUint32(18);
 
-  const now = Date.now();
-  const delay = now - sentAt;
+  const delay = Date.now() - sentAt;
 
   if (delay > MAX_DELAY_MS) {
     sendFeedbackIfNeeded(delay);
@@ -730,7 +715,6 @@ function sendFeedbackIfNeeded(lastDelay) {
 
 function handleFeedback(msg) {
   feedbackAvgDelay = msg.avgDelay;
-  feedbackLastDelay = msg.lastDelay;
   feedbackFps = msg.receivedFps;
 
   const now = performance.now();
@@ -739,21 +723,21 @@ function handleFeedback(msg) {
 
   lastAdaptAt = now;
 
-  if (msg.avgDelay > 900 || msg.receivedFps < 20) {
+  if (msg.avgDelay > 800 || msg.receivedFps < 20) {
     profileIndex = Math.max(0, profileIndex - 2);
     currentProfile = profiles[profileIndex];
     updateTabletStatus("Aggressive downgrade");
     return;
   }
 
-  if (msg.avgDelay > 600 || msg.receivedFps < 22) {
+  if (msg.avgDelay > 500 || msg.receivedFps < 22) {
     profileIndex = Math.max(0, profileIndex - 1);
     currentProfile = profiles[profileIndex];
     updateTabletStatus("Downgrade");
     return;
   }
 
-  if (msg.avgDelay < 250 && msg.receivedFps >= 23) {
+  if (msg.avgDelay < 220 && msg.receivedFps >= 23) {
     profileIndex = Math.min(profiles.length - 1, profileIndex + 1);
     currentProfile = profiles[profileIndex];
     updateTabletStatus("Upgrade");
@@ -868,3 +852,4 @@ if (!role || !serverUrl) {
 
 </body>
 </html>
+
