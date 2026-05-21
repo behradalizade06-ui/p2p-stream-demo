@@ -1,10 +1,8 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Tunnel Screen Stream</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-
-  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+  <title>Adaptive Tunnel Screen Stream</title>
+  <meta name="viewport/npm/qrcode/build/qrcode.min.js"></script>  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
   <style>
     :root {
@@ -267,7 +265,7 @@
         <div class="dot"></div>
         <h1>Screen Stream</h1>
       </div>
-      <div class="subtitle">Fast stable screen stream through Cloudflare tunnel</div>
+      <div class="subtitle">Adaptive stream · feedback optimized for fluidity</div>
     </div>
 
     <button class="secondary" onclick="fullscreenViewer()">Fullscreen</button>
@@ -313,8 +311,8 @@
 <div id="tabletOverlay">
   <div>
     <h2>Streaming Active</h2>
+    <p>Adaptive mode active.</p>
     <p>Now switch to the real tablet content.</p>
-    <p>Do not stay on this page.</p>
   </div>
 </div>
 
@@ -358,12 +356,28 @@ let encoding = false;
 let frameCount = 0;
 let lastImage = null;
 let lastFrameTime = 0;
+let seq = 0;
 
-const FPS = 16;
-const QUALITY = 0.42;
-const MAX_WIDTH = 854;
 const MIME_TYPE = "image/jpeg";
-const FRAME_INTERVAL = 1000 / FPS;
+
+const profiles = [
+  { name: "ULTRA_FLUID", fps: 20, quality: 0.32, maxWidth: 640, bufferLimit: 350 * 1024 },
+  { name: "FAST",        fps: 18, quality: 0.38, maxWidth: 720, bufferLimit: 500 * 1024 },
+  { name: "BALANCED",    fps: 16, quality: 0.45, maxWidth: 854, bufferLimit: 700 * 1024 },
+  { name: "QUALITY",     fps: 14, quality: 0.55, maxWidth: 960, bufferLimit: 950 * 1024 },
+  { name: "HIGH",        fps: 12, quality: 0.62, maxWidth: 1100, bufferLimit: 1200 * 1024 }
+];
+
+let profileIndex = 2;
+let currentProfile = profiles[profileIndex];
+
+let feedbackHistory = [];
+let lastAdaptAt = 0;
+
+let clientDelaySamples = [];
+let clientFramesThisSecond = 0;
+let clientDroppedFrames = 0;
+let clientLastFeedbackAt = Date.now();
 
 if (role === "tablet") {
   startTabletBtn.style.display = "inline-block";
@@ -480,7 +494,13 @@ function connectWebSocket() {
 
     if (msg.type === "frame") {
       if (role === "client") {
-        drawFrame(msg.dataUrl);
+        handleClientFrame(msg);
+      }
+    }
+
+    if (msg.type === "feedback") {
+      if (role === "tablet") {
+        handleTabletFeedback(msg);
       }
     }
 
@@ -528,7 +548,7 @@ async function startTabletScreen() {
   try {
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: {
-        frameRate: FPS,
+        frameRate: 20,
         width: { ideal: 1280 },
         height: { ideal: 720 }
       },
@@ -563,7 +583,7 @@ async function startTabletScreen() {
 
     requestAnimationFrame(frameLoop);
 
-    setStatus("Streaming screen through tunnel");
+    updateTabletStatus();
 
   } catch (err) {
     setError("Screen share failed:\n" + (err.message || err.name || err));
@@ -573,7 +593,9 @@ async function startTabletScreen() {
 function frameLoop(timestamp) {
   if (!streaming) return;
 
-  if (!lastFrameTime || timestamp - lastFrameTime >= FRAME_INTERVAL) {
+  const frameInterval = 1000 / currentProfile.fps;
+
+  if (!lastFrameTime || timestamp - lastFrameTime >= frameInterval) {
     lastFrameTime = timestamp;
     sendFrame();
   }
@@ -585,16 +607,19 @@ function sendFrame() {
   if (encoding) return;
   if (!hiddenVideo.videoWidth || !hiddenVideo.videoHeight) return;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  if (ws.bufferedAmount > 700 * 1024) return;
+
+  if (ws.bufferedAmount > currentProfile.bufferLimit) {
+    return;
+  }
 
   encoding = true;
 
   let width = hiddenVideo.videoWidth;
   let height = hiddenVideo.videoHeight;
 
-  if (width > MAX_WIDTH) {
-    const scale = MAX_WIDTH / width;
-    width = MAX_WIDTH;
+  if (width > currentProfile.maxWidth) {
+    const scale = currentProfile.maxWidth / width;
+    width = currentProfile.maxWidth;
     height = Math.round(height * scale);
   }
 
@@ -603,14 +628,113 @@ function sendFrame() {
 
   captureCtx.drawImage(hiddenVideo, 0, 0, width, height);
 
-  const dataUrl = captureCanvas.toDataURL(MIME_TYPE, QUALITY);
+  const dataUrl = captureCanvas.toDataURL(MIME_TYPE, currentProfile.quality);
 
   encoding = false;
+  seq++;
 
   sendJson({
     type: "frame",
+    seq,
+    sentAt: Date.now(),
+    width,
+    height,
+    profile: currentProfile.name,
     dataUrl
   });
+}
+
+function handleClientFrame(msg) {
+  const now = Date.now();
+  const delay = now - msg.sentAt;
+
+  clientDelaySamples.push(delay);
+
+  if (clientDelaySamples.length > 30) {
+    clientDelaySamples.shift();
+  }
+
+  clientFramesThisSecond++;
+
+  drawFrame(msg.dataUrl);
+
+  if (now - clientLastFeedbackAt >= 1000) {
+    const avgDelay =
+      clientDelaySamples.reduce((sum, value) => sum + value, 0) /
+      Math.max(1, clientDelaySamples.length);
+
+    sendJson({
+      type: "feedback",
+      avgDelay: Math.round(avgDelay),
+      lastDelay: delay,
+      receivedFps: clientFramesThisSecond,
+      droppedFrames: clientDroppedFrames,
+      clientBuffered: 0
+    });
+
+    clientFramesThisSecond = 0;
+    clientDroppedFrames = 0;
+    clientLastFeedbackAt = now;
+  }
+}
+
+function handleTabletFeedback(msg) {
+  feedbackHistory.push(msg);
+
+  if (feedbackHistory.length > 5) {
+    feedbackHistory.shift();
+  }
+
+  const now = Date.now();
+
+  if (now - lastAdaptAt < 1200) {
+    return;
+  }
+
+  lastAdaptAt = now;
+
+  const avgDelay =
+    feedbackHistory.reduce((sum, item) => sum + item.avgDelay, 0) /
+    Math.max(1, feedbackHistory.length);
+
+  const avgFps =
+    feedbackHistory.reduce((sum, item) => sum + item.receivedFps, 0) /
+    Math.max(1, feedbackHistory.length);
+
+  if (avgDelay > 1000) {
+    profileIndex = Math.max(0, profileIndex - 2);
+    currentProfile = profiles[profileIndex];
+    updateTabletStatus("Delay > 1s, aggressive fluidity mode");
+    return;
+  }
+
+  if (avgDelay > 700) {
+    profileIndex = Math.max(0, profileIndex - 1);
+    currentProfile = profiles[profileIndex];
+    updateTabletStatus("High delay, reducing resolution");
+    return;
+  }
+
+  if (avgDelay < 420 && avgFps >= currentProfile.fps * 0.75) {
+    profileIndex = Math.min(profiles.length - 1, profileIndex + 1);
+    currentProfile = profiles[profileIndex];
+    updateTabletStatus("Stable, increasing quality slowly");
+    return;
+  }
+
+  updateTabletStatus("Adaptive stable");
+}
+
+function updateTabletStatus(reason) {
+  const text =
+    "Streaming adaptive mode\n" +
+    "Profile: " + currentProfile.name + "\n" +
+    "FPS: " + currentProfile.fps + "\n" +
+    "Width: " + currentProfile.maxWidth + "\n" +
+    "Quality: " + currentProfile.quality +
+    (reason ? "\n" + reason : "");
+
+  setStatus(text);
 }
 
 function drawFrame(dataUrl) {
@@ -629,6 +753,10 @@ function drawFrame(dataUrl) {
     if (frameCount === 1) {
       setStatus("Screen received ✅");
     }
+  };
+
+  img.onerror = () => {
+    clientDroppedFrames++;
   };
 
   img.src = dataUrl;
@@ -732,3 +860,4 @@ if (!role || !serverUrl) {
 
 </body>
 </html>
+
