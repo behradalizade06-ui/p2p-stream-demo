@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>WebRTC Screen Stream</title>
+  <title>Tunnel Screen Stream</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
   <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
@@ -160,18 +160,29 @@
       border-radius: 24px;
       overflow: hidden;
       border: 1px solid rgba(255,255,255,0.12);
-      height: 70dvh;
+      height: 72dvh;
       min-height: 300px;
       display: none;
       align-items: center;
       justify-content: center;
     }
 
-    video {
+    #remoteCanvas {
       width: 100%;
       height: 100%;
+      display: block;
       background: #000;
-      object-fit: contain;
+    }
+
+    #hiddenVideo,
+    #captureCanvas {
+      position: fixed;
+      left: -10000px;
+      top: -10000px;
+      width: 320px;
+      height: 180px;
+      opacity: 0.01;
+      pointer-events: none;
     }
 
     .viewer:fullscreen {
@@ -184,10 +195,9 @@
       display: flex !important;
     }
 
-    .viewer:fullscreen video {
+    .viewer:fullscreen #remoteCanvas {
       width: 100vw;
       height: 100dvh;
-      object-fit: contain;
     }
 
     #qrWrap {
@@ -240,6 +250,10 @@
       button {
         width: 100%;
       }
+
+      .viewer {
+        height: 72dvh;
+      }
     }
   </style>
 </head>
@@ -253,7 +267,7 @@
         <div class="dot"></div>
         <h1>Screen Stream</h1>
       </div>
-      <div class="subtitle">WebRTC stream through tunnel signaling</div>
+      <div class="subtitle">Fast stable screen stream through Cloudflare tunnel</div>
     </div>
 
     <button class="secondary" onclick="fullscreenViewer()">Fullscreen</button>
@@ -281,8 +295,6 @@
       <button id="startTabletBtn" style="display:none;">Start Tablet Screen</button>
       <button id="stopTabletBtn" class="danger" style="display:none;">Stop Stream</button>
       <button id="fullscreenBtn" class="secondary" style="display:none;" onclick="fullscreenViewer()">Fullscreen</button>
-      <button id="audioBtn" class="secondary" style="display:none;" onclick="enableAudio()">Enable Audio</button>
-      <button id="retryBtn" class="secondary" style="display:none;" onclick="retryClient()">Retry</button>
     </div>
 
     <div id="qrWrap">
@@ -293,7 +305,7 @@
     </div>
 
     <div id="remoteViewer" class="viewer">
-      <video id="remoteVideo" autoplay muted playsinline></video>
+      <canvas id="remoteCanvas"></canvas>
     </div>
   </div>
 </div>
@@ -305,6 +317,9 @@
     <p>Do not stay on this page.</p>
   </div>
 </div>
+
+<video id="hiddenVideo" autoplay muted playsinline></video>
+<canvas id="captureCanvas"></canvas>
 
 <script>
 const params = new URLSearchParams(window.location.search);
@@ -322,58 +337,33 @@ const errorBox = document.getElementById("error");
 const startTabletBtn = document.getElementById("startTabletBtn");
 const stopTabletBtn = document.getElementById("stopTabletBtn");
 const fullscreenBtn = document.getElementById("fullscreenBtn");
-const audioBtn = document.getElementById("audioBtn");
-const retryBtn = document.getElementById("retryBtn");
 
 const qrWrap = document.getElementById("qrWrap");
 const qrCanvas = document.getElementById("qr");
 
 const remoteViewer = document.getElementById("remoteViewer");
-const remoteVideo = document.getElementById("remoteVideo");
+const remoteCanvas = document.getElementById("remoteCanvas");
+const remoteCtx = remoteCanvas.getContext("2d", { alpha: false });
+
+const hiddenVideo = document.getElementById("hiddenVideo");
+const captureCanvas = document.getElementById("captureCanvas");
+const captureCtx = captureCanvas.getContext("2d", { alpha: false });
+
 const tabletOverlay = document.getElementById("tabletOverlay");
 
 let ws = null;
 let localStream = null;
-let peers = {};
-let pendingClients = new Set();
+let streaming = false;
+let encoding = false;
+let frameCount = 0;
+let lastImage = null;
+let lastFrameTime = 0;
 
-let clientIceQueue = [];
-let tabletIceQueues = {};
-let forceRelay = false;
-
-function getRtcConfig() {
-  return {
-    iceTransportPolicy: forceRelay ? "relay" : "all",
-    iceServers: [
-      { urls: "stun:stun.l.google.com:19302" },
-      {
-        urls: "turn:openrelay.metered.ca:80",
-        username: "openrelayproject",
-        credential: "openrelayproject"
-      },
-      {
-        urls: "turn:openrelay.metered.ca:80?transport=tcp",
-        username: "openrelayproject",
-        credential: "openrelayproject"
-      },
-      {
-        urls: "turn:openrelay.metered.ca:443",
-        username: "openrelayproject",
-        credential: "openrelayproject"
-      },
-      {
-        urls: "turn:openrelay.metered.ca:443?transport=tcp",
-        username: "openrelayproject",
-        credential: "openrelayproject"
-      },
-      {
-        urls: "turns:openrelay.metered.ca:443?transport=tcp",
-        username: "openrelayproject",
-        credential: "openrelayproject"
-      }
-    ]
-  };
-}
+const FPS = 12;
+const QUALITY = 0.55;
+const MAX_WIDTH = 960;
+const MIME_TYPE = "image/jpeg";
+const FRAME_INTERVAL = 1000 / FPS;
 
 if (role === "tablet") {
   startTabletBtn.style.display = "inline-block";
@@ -436,7 +426,7 @@ function openAsClient() {
   if (url) window.location.href = url;
 }
 
-function send(data) {
+function sendJson(data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(data));
   }
@@ -451,18 +441,18 @@ function connectWebSocket() {
 
   serverUrl = normalizeServerUrl(serverUrl);
 
-  setStatus("Connecting to signaling tunnel:\n" + serverUrl);
+  setStatus("Connecting to tunnel:\n" + serverUrl);
 
   ws = new WebSocket(serverUrl);
 
   ws.onopen = () => {
-    send({
+    sendJson({
       type: "join",
       role,
       room
     });
 
-    setStatus("Connected to signaling tunnel");
+    setStatus("Connected to tunnel");
   };
 
   ws.onerror = () => {
@@ -473,99 +463,31 @@ function connectWebSocket() {
     setStatus("Disconnected from tunnel\nCode: " + event.code);
   };
 
-  ws.onmessage = async (event) => {
+  ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
 
     if (msg.type === "joined") {
-      if (role === "tablet") {
-        initTablet();
-      }
+      if (role === "tablet") initTablet();
+      if (role === "client") initClient();
+    }
 
+    if (msg.type === "stream-start") {
       if (role === "client") {
-        initClient();
-        send({ type: "client-ready" });
+        remoteViewer.style.display = "flex";
+        setStatus("Receiving screen...");
       }
     }
 
-    if (msg.type === "client-joined") {
-      if (role === "tablet") {
-        if (localStream) {
-          await createOfferForClient(msg.clientId);
-        } else {
-          pendingClients.add(msg.clientId);
-          setStatus("Client waiting. Start tablet screen.");
-        }
-      }
-    }
-
-    if (msg.type === "offer") {
+    if (msg.type === "frame") {
       if (role === "client") {
-        await receiveOffer(msg.offer);
+        drawFrame(msg.dataUrl);
       }
     }
 
-    if (msg.type === "answer") {
-      if (role === "tablet") {
-        const pc = peers[msg.clientId];
-
-        if (pc) {
-          await pc.setRemoteDescription(msg.answer);
-
-          if (tabletIceQueues[msg.clientId]) {
-            for (const candidate of tabletIceQueues[msg.clientId]) {
-              try {
-                await pc.addIceCandidate(candidate);
-              } catch {}
-            }
-
-            tabletIceQueues[msg.clientId] = [];
-          }
-        }
-      }
-    }
-
-    if (msg.type === "ice") {
-      if (role === "tablet") {
-        const pc = peers[msg.clientId];
-
-        if (pc && pc.remoteDescription) {
-          try {
-            await pc.addIceCandidate(msg.candidate);
-          } catch {}
-        } else {
-          if (!tabletIceQueues[msg.clientId]) {
-            tabletIceQueues[msg.clientId] = [];
-          }
-
-          tabletIceQueues[msg.clientId].push(msg.candidate);
-        }
-      }
-
+    if (msg.type === "stream-stop") {
       if (role === "client") {
-        const pc = peers.main;
-
-        if (pc && pc.remoteDescription) {
-          try {
-            await pc.addIceCandidate(msg.candidate);
-          } catch {}
-        } else {
-          clientIceQueue.push(msg.candidate);
-        }
-      }
-    }
-
-    if (msg.type === "client-left") {
-      if (role === "tablet") {
-        pendingClients.delete(msg.clientId);
-
-        const pc = peers[msg.clientId];
-
-        if (pc) {
-          pc.close();
-          delete peers[msg.clientId];
-        }
-
-        delete tabletIceQueues[msg.clientId];
+        clearRemote();
+        setStatus("Stream stopped");
       }
     }
   };
@@ -588,43 +510,48 @@ function initTablet() {
 
   qrWrap.style.display = "block";
 
-  QRCode.toCanvas(qrCanvas, clientUrl);
+  try {
+    QRCode.toCanvas(qrCanvas, clientUrl);
+  } catch {
+    setError("QR generation failed, but streaming button is active.");
+  }
 }
 
 function initClient() {
   setStatus("Client connected. Waiting for stream...");
-
   fullscreenBtn.style.display = "inline-block";
-  audioBtn.style.display = "inline-block";
-  retryBtn.style.display = "inline-block";
+  remoteViewer.style.display = "flex";
+  resizeRemoteCanvas();
 }
 
 async function startTabletScreen() {
   try {
-    try {
-      localStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          frameRate: 30,
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        },
-        audio: true
-      });
-    } catch {
-      localStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          frameRate: 30,
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        },
-        audio: false
-      });
-    }
+    localStream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        frameRate: FPS,
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
+      },
+      audio: false
+    });
 
-    if (!localStream.getVideoTracks().length) {
-      setError("No screen video track captured.");
-      return;
-    }
+    hiddenVideo.srcObject = localStream;
+    await hiddenVideo.play();
+
+    await new Promise(resolve => {
+      if (hiddenVideo.videoWidth > 0) {
+        resolve();
+        return;
+      }
+
+      hiddenVideo.onloadedmetadata = () => resolve();
+    });
+
+    streaming = true;
+
+    sendJson({
+      type: "stream-start"
+    });
 
     startTabletBtn.style.display = "none";
     stopTabletBtn.style.display = "inline-block";
@@ -634,179 +561,131 @@ async function startTabletScreen() {
       stopTabletStream();
     };
 
-    for (const clientId of pendingClients) {
-      await createOfferForClient(clientId);
-    }
+    requestAnimationFrame(frameLoop);
 
-    pendingClients.clear();
-
-    setStatus("WebRTC screen stream active");
+    setStatus("Streaming screen through tunnel");
 
   } catch (err) {
     setError("Screen share failed:\n" + (err.message || err.name || err));
   }
 }
 
-async function createOfferForClient(clientId) {
-  if (!localStream) {
-    pendingClients.add(clientId);
-    return;
+function frameLoop(timestamp) {
+  if (!streaming) return;
+
+  if (timestamp - lastFrameTime >= FRAME_INTERVAL) {
+    lastFrameTime = timestamp;
+    sendFrame();
   }
 
-  if (peers[clientId]) {
-    peers[clientId].close();
-    delete peers[clientId];
+  requestAnimationFrame(frameLoop);
+}
+
+function sendFrame() {
+  if (encoding) return;
+  if (!hiddenVideo.videoWidth || !hiddenVideo.videoHeight) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (ws.bufferedAmount > 3 * 1024 * 1024) return;
+
+  encoding = true;
+
+  let width = hiddenVideo.videoWidth;
+  let height = hiddenVideo.videoHeight;
+
+  if (width > MAX_WIDTH) {
+    const scale = MAX_WIDTH / width;
+    width = MAX_WIDTH;
+    height = Math.round(height * scale);
   }
 
-  const pc = new RTCPeerConnection(getRtcConfig());
-  peers[clientId] = pc;
-  tabletIceQueues[clientId] = [];
+  captureCanvas.width = width;
+  captureCanvas.height = height;
 
-  localStream.getTracks().forEach(track => {
-    pc.addTrack(track, localStream);
-  });
+  captureCtx.drawImage(hiddenVideo, 0, 0, width, height);
 
-  pc.onicecandidate = (event) => {
-    if (event.candidate) {
-      send({
-        type: "ice",
-        clientId,
-        candidate: event.candidate
-      });
-    }
-  };
+  const dataUrl = captureCanvas.toDataURL(MIME_TYPE, QUALITY);
 
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState === "connected") {
-      setStatus("Streaming to client: " + clientId);
-    }
+  encoding = false;
 
-    if (pc.connectionState === "failed") {
-      setError("WebRTC failed for client. Press Retry on phone.");
-    }
-  };
-
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-
-  send({
-    type: "offer",
-    clientId,
-    offer: pc.localDescription
+  sendJson({
+    type: "frame",
+    dataUrl
   });
 }
 
-async function receiveOffer(offer) {
-  if (peers.main) {
-    peers.main.close();
-  }
+function drawFrame(dataUrl) {
+  const img = new Image();
 
-  clientIceQueue = [];
+  img.onload = () => {
+    lastImage = img;
 
-  const pc = new RTCPeerConnection(getRtcConfig());
-  peers.main = pc;
-
-  const remoteStream = new MediaStream();
-  remoteVideo.srcObject = remoteStream;
-
-  pc.ontrack = async (event) => {
-    remoteStream.addTrack(event.track);
-
-    remoteVideo.autoplay = true;
-    remoteVideo.playsInline = true;
-    remoteVideo.controls = false;
-    remoteVideo.muted = true;
+    resizeRemoteCanvas();
+    renderContain(img);
 
     remoteViewer.style.display = "flex";
 
-    try {
-      await remoteVideo.play();
-    } catch {}
+    frameCount++;
 
-    setStatus("Receiving WebRTC stream");
-
-    if (event.track.kind === "video") {
-      event.track.onunmute = async () => {
-        try {
-          await remoteVideo.play();
-        } catch {}
-      };
+    if (frameCount === 1) {
+      setStatus("Screen received ✅");
     }
   };
 
-  pc.onicecandidate = (event) => {
-    if (event.candidate) {
-      send({
-        type: "ice",
-        candidate: event.candidate
-      });
-    }
-  };
-
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState === "connected") {
-      setStatus("WebRTC stream connected ✅");
-    }
-
-    if (pc.connectionState === "failed") {
-      setError("WebRTC failed. Press Retry.");
-    }
-  };
-
-  await pc.setRemoteDescription(offer);
-
-  for (const candidate of clientIceQueue) {
-    try {
-      await pc.addIceCandidate(candidate);
-    } catch {}
-  }
-
-  clientIceQueue = [];
-
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-
-  send({
-    type: "answer",
-    answer: pc.localDescription
-  });
+  img.src = dataUrl;
 }
 
-function retryClient() {
-  forceRelay = !forceRelay;
+function resizeRemoteCanvas() {
+  const rect = remoteViewer.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
 
-  if (peers.main) {
-    peers.main.close();
-    peers.main = null;
+  const width = Math.max(1, Math.floor(rect.width * dpr));
+  const height = Math.max(1, Math.floor(rect.height * dpr));
+
+  if (remoteCanvas.width !== width || remoteCanvas.height !== height) {
+    remoteCanvas.width = width;
+    remoteCanvas.height = height;
   }
+}
 
-  remoteVideo.srcObject = null;
+function renderContain(img) {
+  const canvasW = remoteCanvas.width;
+  const canvasH = remoteCanvas.height;
+
+  const imgW = img.naturalWidth;
+  const imgH = img.naturalHeight;
+
+  const scale = Math.min(canvasW / imgW, canvasH / imgH);
+
+  const drawW = imgW * scale;
+  const drawH = imgH * scale;
+
+  const x = (canvasW - drawW) / 2;
+  const y = (canvasH - drawH) / 2;
+
+  remoteCtx.fillStyle = "#000";
+  remoteCtx.fillRect(0, 0, canvasW, canvasH);
+  remoteCtx.drawImage(img, x, y, drawW, drawH);
+}
+
+function clearRemote() {
+  remoteCtx.clearRect(0, 0, remoteCanvas.width, remoteCanvas.height);
   remoteViewer.style.display = "none";
-  clientIceQueue = [];
-
-  send({ type: "client-ready" });
-
-  setStatus(forceRelay ? "Retrying with TURN relay..." : "Retrying normal WebRTC...");
+  frameCount = 0;
 }
 
 function stopTabletStream() {
-  Object.keys(peers).forEach(id => {
-    peers[id].close();
-    delete peers[id];
-  });
-
-  peers = {};
-  pendingClients.clear();
-  tabletIceQueues = {};
-  clientIceQueue = [];
+  streaming = false;
 
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
   }
 
   localStream = null;
+  hiddenVideo.srcObject = null;
 
-  send({ type: "stream-stop" });
+  sendJson({
+    type: "stream-stop"
+  });
 
   startTabletBtn.style.display = "inline-block";
   stopTabletBtn.style.display = "none";
@@ -815,24 +694,30 @@ function stopTabletStream() {
   setStatus("Stream stopped");
 }
 
-async function enableAudio() {
-  try {
-    remoteVideo.muted = false;
-    remoteVideo.volume = 1;
-    await remoteVideo.play();
-    setStatus("Audio enabled");
-  } catch (err) {
-    setError("Audio enable failed:\n" + (err.message || err.name || err));
-  }
-}
-
 async function fullscreenViewer() {
   remoteViewer.style.display = "flex";
+  resizeRemoteCanvas();
 
   try {
     await remoteViewer.requestFullscreen();
   } catch {}
 }
+
+window.addEventListener("resize", () => {
+  if (lastImage) {
+    resizeRemoteCanvas();
+    renderContain(lastImage);
+  }
+});
+
+document.addEventListener("fullscreenchange", () => {
+  if (lastImage) {
+    setTimeout(() => {
+      resizeRemoteCanvas();
+      renderContain(lastImage);
+    }, 150);
+  }
+});
 
 startTabletBtn.onclick = startTabletScreen;
 stopTabletBtn.onclick = stopTabletStream;
