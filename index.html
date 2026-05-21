@@ -1,870 +1,298 @@
-<!DOCTYPE html>
-<html>
-<head>
-  <title>Low Latency Screen/build/qrcode.min.js"></script>  <title>Low Latency Screen Stream</title>
+// tunnel-video-server.js
+//
+// Install once:
+// npm init -y
+// npm install ws qrcode
+//
+// Run:
+// node tunnel-video-server.js
 
-  <style>
-    :root {
-      --bg: #070b0a;
-      --green: #00b050;
-      --green2: #19d36f;
-      --green3: #00853e;
-      --text: #ffffff;
-      --muted: #a8b8b2;
-      --danger: #ff5c5c;
-      --border: rgba(255,255,255,0.1);
-      --radius: 22px;
-    }
+const http = require("http");
+const WebSocket = require("ws");
+const QRCode = require("qrcode");
+const { spawn } = require("child_process");
 
-    * {
-      box-sizing: border-box;
-    }
+const PORT = 8081;
+const GITHUB_PAGE = "https://behradalizade06-ui.github.io/p2p-stream-demo/";
+const ROOM = "demo";
 
-    html,
-    body {
-      margin: 0;
-      width: 100%;
-      min-height: 100%;
-      background:
-        radial-gradient(circle at top left, rgba(0,176,80,0.18), transparent 35%),
-        radial-gradient(circle at bottom right, rgba(0,176,80,0.10), transparent 40%),
-        var(--bg);
-      color: var(--text);
-      font-family: Arial, Helvetica, sans-serif;
-      overflow-x: hidden;
-    }
+const MAX_CLIENT_BUFFER = 350 * 1024;
 
-    .app {
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 18px;
-    }
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { "Content-Type": "text/plain" });
+  res.end("Low latency binary tunnel stream OK\n");
+});
 
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 16px;
-    }
+const wss = new WebSocket.Server({
+  server,
+  maxPayload: 30 * 1024 * 1024
+});
 
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
+const rooms = new Map();
 
-    .dot {
-      width: 18px;
-      height: 18px;
-      border-radius: 999px;
-      background: var(--green);
-      box-shadow: 0 0 22px rgba(0,176,80,0.85);
-    }
+let tunnelProcess = null;
+let tunnelUrlFound = false;
 
-    h1 {
-      margin: 0;
-      font-size: clamp(26px, 5vw, 42px);
-      letter-spacing: -0.04em;
-    }
-
-    .subtitle {
-      margin-top: 6px;
-      color: var(--muted);
-      font-size: 14px;
-    }
-
-    .panel {
-      background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015));
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 16px;
-      box-shadow: 0 18px 50px rgba(0,0,0,0.45);
-    }
-
-    .status {
-      margin: 12px 0;
-      padding: 14px 16px;
-      border-radius: 18px;
-      background: rgba(0,176,80,0.10);
-      border: 1px solid rgba(0,176,80,0.25);
-      color: var(--green2);
-      font-weight: 800;
-      white-space: pre-wrap;
-    }
-
-    .error {
-      margin: 12px 0;
-      padding: 14px 16px;
-      border-radius: 18px;
-      background: rgba(255,92,92,0.10);
-      border: 1px solid rgba(255,92,92,0.25);
-      color: var(--danger);
-      font-weight: 800;
-      white-space: pre-wrap;
-      display: none;
-    }
-
-    .controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin: 14px 0;
-    }
-
-    button {
-      border: 0;
-      border-radius: 999px;
-      padding: 13px 18px;
-      font-size: 15px;
-      font-weight: 800;
-      color: white;
-      background: linear-gradient(135deg, var(--green), var(--green3));
-      box-shadow: 0 12px 28px rgba(0,176,80,0.28);
-      cursor: pointer;
-    }
-
-    button.secondary {
-      background: rgba(255,255,255,0.08);
-      border: 1px solid var(--border);
-      box-shadow: none;
-    }
-
-    button.danger {
-      background: linear-gradient(135deg, #ff5c5c, #b51f1f);
-    }
-
-    input {
-      width: 100%;
-      padding: 15px 16px;
-      margin: 8px 0 12px;
-      font-size: 15px;
-      color: white;
-      background: rgba(255,255,255,0.06);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      outline: none;
-    }
-
-    p {
-      color: var(--muted);
-      margin: 0 0 8px;
-    }
-
-    .viewer {
-      margin-top: 16px;
-      background: #000;
-      border-radius: 24px;
-      overflow: hidden;
-      border: 1px solid rgba(255,255,255,0.12);
-      height: 72dvh;
-      min-height: 300px;
-      display: none;
-      align-items: center;
-      justify-content: center;
-    }
-
-    #remoteCanvas {
-      width: 100%;
-      height: 100%;
-      display: block;
-      background: #000;
-    }
-
-    #hiddenVideo,
-    #captureCanvas {
-      position: fixed;
-      left: -10000px;
-      top: -10000px;
-      width: 320px;
-      height: 180px;
-      opacity: 0.01;
-      pointer-events: none;
-    }
-
-    .viewer:fullscreen {
-      width: 100vw;
-      height: 100dvh;
-      margin: 0;
-      border-radius: 0;
-      border: 0;
-      background: #000;
-      display: flex !important;
-    }
-
-    .viewer:fullscreen #remoteCanvas {
-      width: 100vw;
-      height: 100dvh;
-    }
-
-    #qrWrap {
-      margin-top: 16px;
-      display: none;
-    }
-
-    #qrBox {
-      display: inline-block;
-      padding: 16px;
-      border-radius: 22px;
-      background: white;
-    }
-
-    @media (orientation: portrait) {
-      .header {
-        flex-direction: column;
-        align-items: flex-start;
-      }
-
-      .controls {
-        flex-direction: column;
-      }
-
-      button {
-        width: 100%;
-      }
-
-      .viewer {
-        height: 72dvh;
-      }
-    }
-  </style>
-</head>
-
-<body>
-
-<div class="app">
-  <div class="header">
-    <div>
-      <div class="brand">
-        <div class="dot"></div>
-        <h1>Screen Stream</h1>
-      </div>
-      <div class="subtitle">Binary tunnel stream optimized for low latency</div>
-    </div>
-
-    <button class="secondary" onclick="fullscreenViewer()">Fullscreen</button>
-  </div>
-
-  <div class="panel">
-    <div id="status" class="status">Loading...</div>
-    <div id="error" class="error"></div>
-
-    <div id="setupBox" class="panel" style="display:none;">
-      <p>Paste Cloudflare tunnel URL:</p>
-
-      <input
-        id="serverInput"
-        placeholder="https://xxxxx.trycloudflare.com OR wss://xxxxx.trycloudflare.com"
-      >
-
-      <div class="controls">
-        <button onclick="openAsTablet()">Open as Tablet</button>
-        <button class="secondary" onclick="openAsClient()">Open as Client</button>
-      </div>
-    </div>
-
-    <div class="controls">
-      <button id="startTabletBtn" style="display:none;">Start Tablet Screen</button>
-      <button id="stopTabletBtn" class="danger" style="display:none;">Stop Stream</button>
-      <button id="fullscreenBtn" class="secondary" style="display:none;" onclick="fullscreenViewer()">Fullscreen</button>
-    </div>
-
-    <div id="qrWrap">
-      <h3>Client QR</h3>
-      <div id="qrBox">
-        <canvas id="qr"></canvas>
-      </div>
-    </div>
-
-    <div id="remoteViewer" class="viewer">
-      <canvas id="remoteCanvas"></canvas>
-    </div>
-  </div>
-</div>
-
-<video id="hiddenVideo" autoplay muted playsinline></video>
-<canvas id="captureCanvas"></canvas>
-
-<script>
-const params = new URLSearchParams(window.location.search);
-
-const role = params.get("role");
-const room = params.get("room") || "demo";
-let serverUrl = params.get("server");
-
-const setupBox = document.getElementById("setupBox");
-const serverInput = document.getElementById("serverInput");
-
-const statusBox = document.getElementById("status");
-const errorBox = document.getElementById("error");
-
-const startTabletBtn = document.getElementById("startTabletBtn");
-const stopTabletBtn = document.getElementById("stopTabletBtn");
-const fullscreenBtn = document.getElementById("fullscreenBtn");
-
-const qrWrap = document.getElementById("qrWrap");
-const qrCanvas = document.getElementById("qr");
-
-const remoteViewer = document.getElementById("remoteViewer");
-const remoteCanvas = document.getElementById("remoteCanvas");
-const remoteCtx = remoteCanvas.getContext("2d", { alpha: false });
-
-const hiddenVideo = document.getElementById("hiddenVideo");
-const captureCanvas = document.getElementById("captureCanvas");
-const captureCtx = captureCanvas.getContext("2d", { alpha: false });
-
-let ws = null;
-let localStream = null;
-let streaming = false;
-let encoding = false;
-let frameCount = 0;
-let lastImage = null;
-let seq = 0;
-
-const HEADER_SIZE = 24;
-const TARGET_FPS = 24;
-const MAX_DELAY_MS = 1000;
-const FRAME_INTERVAL = 1000 / TARGET_FPS;
-const MIME_TYPE = "image/jpeg";
-
-const profiles = [
-  { name: "P0_EMERGENCY", maxWidth: 426, quality: 0.22, bufferLimit: 120 * 1024 },
-  { name: "P1_ULTRA_FLUID", maxWidth: 568, quality: 0.28, bufferLimit: 180 * 1024 },
-  { name: "P2_FAST", maxWidth: 640, quality: 0.34, bufferLimit: 250 * 1024 },
-  { name: "P3_BALANCED", maxWidth: 720, quality: 0.40, bufferLimit: 350 * 1024 },
-  { name: "P4_DETAIL", maxWidth: 854, quality: 0.48, bufferLimit: 500 * 1024 }
-];
-
-let profileIndex = 2;
-let currentProfile = profiles[profileIndex];
-
-let lastFrameSentAt = 0;
-let lastAdaptAt = 0;
-
-let feedbackAvgDelay = 0;
-let feedbackLastDelay = 0;
-let feedbackFps = 0;
-
-let clientDelaySamples = [];
-let clientFramesThisSecond = 0;
-let clientLastFeedbackAt = performance.now();
-
-let latestPacket = null;
-let renderScheduled = false;
-let streamTimer = null;
-
-if (role === "tablet") {
-  startTabletBtn.style.display = "inline-block";
-}
-
-function setStatus(text) {
-  statusBox.innerText = text;
-}
-
-function setError(text) {
-  if (!text) {
-    errorBox.style.display = "none";
-    errorBox.innerText = "";
-    return;
+function getRoom(roomName) {
+  if (!rooms.has(roomName)) {
+    rooms.set(roomName, {
+      tablet: null,
+      clients: new Set(),
+      streaming: false
+    });
   }
 
-  errorBox.style.display = "block";
-  errorBox.innerText = text;
+  return rooms.get(roomName);
 }
 
-function normalizeServerUrl(url) {
-  if (!url) return null;
-
-  url = url.trim();
-
-  if (url.startsWith("https://")) return url.replace("https://", "wss://");
-  if (url.startsWith("http://")) return url.replace("http://", "ws://");
-  if (url.startsWith("wss://") || url.startsWith("ws://")) return url;
-
-  return "wss://" + url;
-}
-
-function buildUrl(newRole) {
-  const cleanServer = normalizeServerUrl(serverInput.value);
-
-  if (!cleanServer) {
-    alert("Insert Cloudflare tunnel URL first");
-    return null;
-  }
-
-  return (
-    window.location.origin +
-    window.location.pathname +
-    "?role=" +
-    encodeURIComponent(newRole) +
-    "&room=" +
-    encodeURIComponent(room) +
-    "&server=" +
-    encodeURIComponent(cleanServer)
-  );
-}
-
-function openAsTablet() {
-  const url = buildUrl("tablet");
-  if (url) window.location.href = url;
-}
-
-function openAsClient() {
-  const url = buildUrl("client");
-  if (url) window.location.href = url;
-}
-
-function sendJson(data) {
+function sendJson(ws, data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(data));
   }
 }
 
-function connectWebSocket() {
-  if (!serverUrl) {
-    setupBox.style.display = "block";
-    setStatus("Insert tunnel URL and choose Tablet or Client");
-    return;
+function broadcastJson(room, data) {
+  const payload = JSON.stringify(data);
+
+  for (const client of room.clients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
   }
+}
 
-  serverUrl = normalizeServerUrl(serverUrl);
+function broadcastBinary(room, buffer) {
+  for (const client of room.clients) {
+    if (client.readyState !== WebSocket.OPEN) {
+      continue;
+    }
 
-  setStatus("Connecting to tunnel:\n" + serverUrl);
+    // IMPORTANT:
+    // Do not allow slow phones to build latency.
+    // If phone/network is slow, skip this frame.
+    if (client.bufferedAmount > MAX_CLIENT_BUFFER) {
+      continue;
+    }
 
-  ws = new WebSocket(serverUrl);
-  ws.binaryType = "arraybuffer";
+    client.send(buffer, { binary: true });
+  }
+}
 
-  ws.onopen = () => {
-    sendJson({
-      type: "join",
-      role,
-      room
-    });
+wss.on("connection", (ws) => {
+  let role = null;
+  let roomName = ROOM;
 
-    setStatus("Connected to tunnel");
-  };
+  console.log("New WebSocket connection");
 
-  ws.onerror = () => {
-    setError("WebSocket error:\n" + serverUrl);
-  };
+  ws.on("message", (message, isBinary) => {
+    const room = getRoom(roomName);
 
-  ws.onclose = (event) => {
-    setStatus("Disconnected from tunnel\nCode: " + event.code);
-  };
-
-  ws.onmessage = (event) => {
-    if (typeof event.data === "string") {
-      const msg = JSON.parse(event.data);
-
-      if (msg.type === "joined") {
-        if (role === "tablet") initTablet();
-        if (role === "client") initClient();
+    // Binary messages are video frames from tablet.
+    if (isBinary) {
+      if (role === "tablet" && room.streaming) {
+        broadcastBinary(room, message);
       }
 
-      if (msg.type === "stream-start") {
-        if (role === "client") {
-          remoteViewer.style.display = "flex";
-          setStatus("Receiving screen...");
-        }
+      return;
+    }
+
+    let msg;
+
+    try {
+      msg = JSON.parse(message.toString());
+    } catch {
+      return;
+    }
+
+    if (msg.type === "join") {
+      role = msg.role;
+      roomName = msg.room || ROOM;
+
+      const joinedRoom = getRoom(roomName);
+
+      if (role === "tablet") {
+        joinedRoom.tablet = ws;
+        joinedRoom.streaming = false;
+
+        console.log("Tablet joined room:", roomName);
+
+        sendJson(ws, {
+          type: "joined",
+          role: "tablet"
+        });
       }
 
-      if (msg.type === "feedback") {
-        if (role === "tablet") {
-          handleFeedback(msg);
-        }
-      }
+      if (role === "client") {
+        joinedRoom.clients.add(ws);
 
-      if (msg.type === "stream-stop") {
-        if (role === "client") {
-          clearRemote();
-          setStatus("Stream stopped");
+        console.log("Client joined room:", roomName);
+
+        sendJson(ws, {
+          type: "joined",
+          role: "client"
+        });
+
+        if (joinedRoom.streaming) {
+          sendJson(ws, {
+            type: "stream-start"
+          });
         }
       }
 
       return;
     }
 
-    if (role === "client") {
-      receiveBinaryFrame(event.data);
+    if (msg.type === "stream-start" && role === "tablet") {
+      room.streaming = true;
+
+      console.log("Stream started:", roomName);
+
+      broadcastJson(room, {
+        type: "stream-start"
+      });
+
+      return;
     }
-  };
-}
 
-function initTablet() {
-  setStatus("Tablet connected. Press Start Tablet Screen.");
-
-  startTabletBtn.style.display = "inline-block";
-  stopTabletBtn.style.display = "none";
-
-  const clientUrl =
-    window.location.origin +
-    window.location.pathname +
-    "?role=client" +
-    "&room=" +
-    encodeURIComponent(room) +
-    "&server=" +
-    encodeURIComponent(serverUrl);
-
-  qrWrap.style.display = "block";
-
-  try {
-    QRCode.toCanvas(qrCanvas, clientUrl);
-  } catch {
-    setError("QR generation failed, but streaming button is active.");
-  }
-}
-
-function initClient() {
-  setStatus("Client connected. Waiting for stream...");
-  fullscreenBtn.style.display = "inline-block";
-  remoteViewer.style.display = "flex";
-  resizeRemoteCanvas();
-}
-
-async function startTabletScreen() {
-  try {
-    localStream = await navigator.mediaDevices.getDisplayMedia({
-      video: {
-        frameRate: TARGET_FPS,
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
-      },
-      audio: false
-    });
-
-    hiddenVideo.srcObject = localStream;
-    await hiddenVideo.play();
-
-    await new Promise(resolve => {
-      if (hiddenVideo.videoWidth > 0) {
-        resolve();
-        return;
+    if (msg.type === "feedback" && role === "client") {
+      if (room.tablet && room.tablet.readyState === WebSocket.OPEN) {
+        sendJson(room.tablet, {
+          type: "feedback",
+          avgDelay: msg.avgDelay,
+          lastDelay: msg.lastDelay,
+          receivedFps: msg.receivedFps
+        });
       }
 
-      hiddenVideo.onloadedmetadata = () => resolve();
-    });
-
-    streaming = true;
-
-    sendJson({
-      type: "stream-start"
-    });
-
-    startTabletBtn.style.display = "none";
-    stopTabletBtn.style.display = "inline-block";
-
-    localStream.getVideoTracks()[0].onended = () => {
-      stopTabletStream();
-    };
-
-    if (streamTimer) {
-      clearInterval(streamTimer);
+      return;
     }
 
-    streamTimer = setInterval(sendFixedRateFrame, FRAME_INTERVAL);
+    if (msg.type === "stream-stop" && role === "tablet") {
+      room.streaming = false;
 
-    updateTabletStatus("Started");
+      console.log("Stream stopped:", roomName);
 
-  } catch (err) {
-    setError("Screen share failed:\n" + (err.message || err.name || err));
-  }
-}
+      broadcastJson(room, {
+        type: "stream-stop"
+      });
 
-function sendFixedRateFrame() {
-  if (!streaming) return;
-
-  const now = performance.now();
-
-  if (now - lastFrameSentAt < FRAME_INTERVAL * 0.75) {
-    return;
-  }
-
-  lastFrameSentAt = now;
-  sendFrame();
-}
-
-function sendFrame() {
-  if (encoding) return;
-  if (!hiddenVideo.videoWidth || !hiddenVideo.videoHeight) return;
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-  if (ws.bufferedAmount > currentProfile.bufferLimit) {
-    return;
-  }
-
-  encoding = true;
-
-  let width = hiddenVideo.videoWidth;
-  let height = hiddenVideo.videoHeight;
-
-  if (width > currentProfile.maxWidth) {
-    const scale = currentProfile.maxWidth / width;
-    width = currentProfile.maxWidth;
-    height = Math.round(height * scale);
-  }
-
-  captureCanvas.width = width;
-  captureCanvas.height = height;
-
-  captureCtx.drawImage(hiddenVideo, 0, 0, width, height);
-
-  captureCanvas.toBlob(async (blob) => {
-    encoding = false;
-
-    if (!blob || !ws || ws.readyState !== WebSocket.OPEN) return;
-
-    const imageBuffer = await blob.arrayBuffer();
-
-    seq++;
-
-    const packet = new ArrayBuffer(HEADER_SIZE + imageBuffer.byteLength);
-    const view = new DataView(packet);
-    const bytes = new Uint8Array(packet);
-
-    view.setUint32(0, seq);
-    view.setFloat64(4, Date.now());
-    view.setUint16(12, width);
-    view.setUint16(14, height);
-    view.setUint8(16, profileIndex);
-    view.setUint8(17, 0);
-    view.setUint32(18, imageBuffer.byteLength);
-
-    bytes.set(new Uint8Array(imageBuffer), HEADER_SIZE);
-
-    ws.send(packet);
-  }, MIME_TYPE, currentProfile.quality);
-}
-
-function receiveBinaryFrame(arrayBuffer) {
-  const view = new DataView(arrayBuffer);
-
-  const frameSeq = view.getUint32(0);
-  const sentAt = view.getFloat64(4);
-  const width = view.getUint16(12);
-  const height = view.getUint16(14);
-  const profile = view.getUint8(16);
-  const payloadSize = view.getUint32(18);
-
-  const now = Date.now();
-  const delay = now - sentAt;
-
-  if (delay > MAX_DELAY_MS) {
-    sendFeedbackIfNeeded(delay);
-    return;
-  }
-
-  clientDelaySamples.push(delay);
-
-  if (clientDelaySamples.length > 30) {
-    clientDelaySamples.shift();
-  }
-
-  const payload = arrayBuffer.slice(HEADER_SIZE, HEADER_SIZE + payloadSize);
-
-  latestPacket = {
-    seq: frameSeq,
-    sentAt,
-    width,
-    height,
-    profile,
-    payload
-  };
-
-  clientFramesThisSecond++;
-
-  if (!renderScheduled) {
-    renderScheduled = true;
-    requestAnimationFrame(renderLatestPacket);
-  }
-
-  sendFeedbackIfNeeded(delay);
-}
-
-async function renderLatestPacket() {
-  renderScheduled = false;
-
-  if (!latestPacket) return;
-
-  const packet = latestPacket;
-  latestPacket = null;
-
-  try {
-    const blob = new Blob([packet.payload], { type: MIME_TYPE });
-    const bitmap = await createImageBitmap(blob);
-
-    resizeRemoteCanvas();
-    renderBitmapContain(bitmap);
-
-    bitmap.close();
-
-    frameCount++;
-
-    if (frameCount === 1) {
-      setStatus("Screen received");
+      return;
     }
-  } catch {}
-}
-
-function sendFeedbackIfNeeded(lastDelay) {
-  const now = performance.now();
-
-  if (now - clientLastFeedbackAt < 1000) return;
-
-  const avgDelay =
-    clientDelaySamples.reduce((sum, value) => sum + value, 0) /
-    Math.max(1, clientDelaySamples.length);
-
-  sendJson({
-    type: "feedback",
-    avgDelay: Math.round(avgDelay || lastDelay || 0),
-    lastDelay: Math.round(lastDelay || 0),
-    receivedFps: clientFramesThisSecond
   });
 
-  clientFramesThisSecond = 0;
-  clientLastFeedbackAt = now;
-}
+  ws.on("close", () => {
+    const room = getRoom(roomName);
 
-function handleFeedback(msg) {
-  feedbackAvgDelay = msg.avgDelay;
-  feedbackLastDelay = msg.lastDelay;
-  feedbackFps = msg.receivedFps;
+    if (role === "tablet" && room.tablet === ws) {
+      console.log("Tablet disconnected");
 
-  const now = performance.now();
+      room.tablet = null;
+      room.streaming = false;
 
-  if (now - lastAdaptAt < 1000) return;
+      broadcastJson(room, {
+        type: "stream-stop"
+      });
+    }
 
-  lastAdaptAt = now;
+    if (role === "client") {
+      console.log("Client disconnected");
+      room.clients.delete(ws);
+    }
 
-  if (msg.avgDelay > 900 || msg.receivedFps < 20) {
-    profileIndex = Math.max(0, profileIndex - 2);
-    currentProfile = profiles[profileIndex];
-    updateTabletStatus("Aggressive downgrade");
-    return;
-  }
-
-  if (msg.avgDelay > 600 || msg.receivedFps < 22) {
-    profileIndex = Math.max(0, profileIndex - 1);
-    currentProfile = profiles[profileIndex];
-    updateTabletStatus("Downgrade");
-    return;
-  }
-
-  if (msg.avgDelay < 250 && msg.receivedFps >= 23) {
-    profileIndex = Math.min(profiles.length - 1, profileIndex + 1);
-    currentProfile = profiles[profileIndex];
-    updateTabletStatus("Upgrade");
-    return;
-  }
-
-  updateTabletStatus("Stable");
-}
-
-function updateTabletStatus(reason) {
-  setStatus(
-    "Streaming binary low latency\n" +
-    "Target FPS: 24\n" +
-    "Profile: " + currentProfile.name + "\n" +
-    "Width: " + currentProfile.maxWidth + "\n" +
-    "Quality: " + currentProfile.quality + "\n" +
-    "Phone FPS: " + feedbackFps + "\n" +
-    "Delay: " + feedbackAvgDelay + " ms\n" +
-    reason
-  );
-}
-
-function resizeRemoteCanvas() {
-  const rect = remoteViewer.getBoundingClientRect();
-  const dpr = window.devicePixelRatio || 1;
-
-  const width = Math.max(1, Math.floor(rect.width * dpr));
-  const height = Math.max(1, Math.floor(rect.height * dpr));
-
-  if (remoteCanvas.width !== width || remoteCanvas.height !== height) {
-    remoteCanvas.width = width;
-    remoteCanvas.height = height;
-  }
-}
-
-function renderBitmapContain(bitmap) {
-  const canvasW = remoteCanvas.width;
-  const canvasH = remoteCanvas.height;
-
-  const imgW = bitmap.width;
-  const imgH = bitmap.height;
-
-  const scale = Math.min(canvasW / imgW, canvasH / imgH);
-
-  const drawW = imgW * scale;
-  const drawH = imgH * scale;
-
-  const x = (canvasW - drawW) / 2;
-  const y = (canvasH - drawH) / 2;
-
-  remoteCtx.fillStyle = "#000";
-  remoteCtx.fillRect(0, 0, canvasW, canvasH);
-  remoteCtx.drawImage(bitmap, x, y, drawW, drawH);
-}
-
-function clearRemote() {
-  remoteCtx.clearRect(0, 0, remoteCanvas.width, remoteCanvas.height);
-  remoteViewer.style.display = "none";
-  frameCount = 0;
-}
-
-function stopTabletStream() {
-  streaming = false;
-
-  if (streamTimer) {
-    clearInterval(streamTimer);
-    streamTimer = null;
-  }
-
-  if (localStream) {
-    localStream.getTracks().forEach(track => track.stop());
-  }
-
-  localStream = null;
-  hiddenVideo.srcObject = null;
-
-  sendJson({
-    type: "stream-stop"
+    if (!room.tablet && room.clients.size === 0) {
+      rooms.delete(roomName);
+    }
   });
-
-  startTabletBtn.style.display = "inline-block";
-  stopTabletBtn.style.display = "none";
-
-  setStatus("Stream stopped");
-}
-
-async function fullscreenViewer() {
-  remoteViewer.style.display = "flex";
-  resizeRemoteCanvas();
-
-  try {
-    await remoteViewer.requestFullscreen();
-  } catch {}
-}
-
-window.addEventListener("resize", resizeRemoteCanvas);
-
-document.addEventListener("fullscreenchange", () => {
-  setTimeout(resizeRemoteCanvas, 150);
 });
 
-startTabletBtn.onclick = startTabletScreen;
-stopTabletBtn.onclick = stopTabletStream;
+server.listen(PORT, () => {
+  console.log("\nLow latency binary tunnel server running:");
+  console.log(`http://localhost:${PORT}`);
 
-if (!role || !serverUrl) {
-  setupBox.style.display = "block";
-  setStatus("Insert tunnel URL and choose Tablet or Client");
-} else {
-  connectWebSocket();
-}
-</script>
+  console.log("\nStarting Cloudflare Tunnel...");
 
-</body>
-</html>
+  tunnelProcess = spawn("cloudflared", [
+    "tunnel",
+    "--url",
+    `http://localhost:${PORT}`
+  ]);
 
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  function handleTunnelOutput(data) {
+    const text = data.toString();
+    process.stdout.write(text);
 
+    const match = text.match(/https:\/\/[a-zA-Z0-9.-]+\.trycloudflare\.com/);
+
+    if (match && !tunnelUrlFound) {
+      tunnelUrlFound = true;
+
+      const httpsTunnel = match[0].replace(/\/$/, "");
+      const wssTunnel = httpsTunnel.replace("https://", "wss://");
+
+      const tabletUrl =
+        GITHUB_PAGE +
+        "?role=tablet" +
+        "&room=" +
+        encodeURIComponent(ROOM) +
+        "&server=" +
+        encodeURIComponent(wssTunnel);
+
+      const clientUrl =
+        GITHUB_PAGE +
+        "?role=client" +
+        "&room=" +
+        encodeURIComponent(ROOM) +
+        "&server=" +
+        encodeURIComponent(wssTunnel);
+
+      console.log("\n\n==============================");
+      console.log("SYSTEM READY");
+      console.log("==============================");
+
+      console.log("\nCloudflare HTTPS tunnel:");
+      console.log(httpsTunnel);
+
+      console.log("\nWebSocket tunnel:");
+      console.log(wssTunnel);
+
+      console.log("\nOpen this on TABLET:");
+      console.log(tabletUrl);
+
+      console.log("\nClient URL:");
+      console.log(clientUrl);
+
+      QRCode.toString(clientUrl, { type: "terminal" }, (err, qr) => {
+        if (!err) {
+          console.log("\nCLIENT QR:\n");
+          console.log(qr);
+        }
+      });
+
+      console.log("\nKeep this terminal open.\n");
+    }
+  }
+
+  tunnelProcess.stdout.on("data", handleTunnelOutput);
+  tunnelProcess.stderr.on("data", handleTunnelOutput);
+
+  tunnelProcess.on("error", (err) => {
+    console.error("\nCloudflared failed:");
+    console.error(err.message);
+    console.error("\nCheck with:");
+    console.error("cloudflared --version");
+  });
+
+  tunnelProcess.on("close", (code) => {
+    console.log("\nCloudflare tunnel stopped:", code);
+  });
+});
+
+process.on("SIGINT", () => {
+  console.log("\nStopping...");
+
+  if (tunnelProcess) {
+    tunnelProcess.kill("SIGINT");
+  }
+
+  process.exit();
+});
