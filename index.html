@@ -1,8 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Tunnel Screen Stream</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Tunnel Screen Stream</title, initial-scale=1.0, viewport-fit=cover">  <title>Tunnel Screen Stream</title>
 
   <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
 
@@ -23,7 +22,8 @@
       box-sizing: border-box;
     }
 
-    html, body {
+    html,
+    body {
       margin: 0;
       width: 100%;
       min-height: 100%;
@@ -166,7 +166,7 @@
       justify-content: center;
     }
 
-    #remoteCanvas {
+    #remoteImage {
       width: 100%;
       height: 100%;
       object-fit: contain;
@@ -195,7 +195,7 @@
       display: flex !important;
     }
 
-    .viewer:fullscreen #remoteCanvas {
+    .viewer:fullscreen #remoteImage {
       width: 100vw;
       height: 100dvh;
       object-fit: contain;
@@ -302,7 +302,7 @@
     </div>
 
     <div id="remoteViewer" class="viewer">
-      <canvas id="remoteCanvas"></canvas>
+      <img id="remoteImage" alt="Remote tablet screen">
     </div>
   </div>
 </div>
@@ -339,8 +339,7 @@ const qrWrap = document.getElementById("qrWrap");
 const qrCanvas = document.getElementById("qr");
 
 const remoteViewer = document.getElementById("remoteViewer");
-const remoteCanvas = document.getElementById("remoteCanvas");
-const remoteCtx = remoteCanvas.getContext("2d");
+const remoteImage = document.getElementById("remoteImage");
 
 const hiddenVideo = document.getElementById("hiddenVideo");
 const captureCanvas = document.getElementById("captureCanvas");
@@ -352,14 +351,12 @@ let ws = null;
 let localStream = null;
 let streaming = false;
 let encoding = false;
-let drawing = false;
-let pendingBitmap = null;
 let frameCount = 0;
 
-const FPS = 15;
-const QUALITY = 0.68;
+const FPS = 8;
+const QUALITY = 0.62;
 const MAX_WIDTH = 960;
-const MIME_TYPE = "image/webp";
+const MIME_TYPE = "image/jpeg";
 
 function setStatus(text) {
   statusBox.innerText = text;
@@ -436,7 +433,6 @@ function connectWebSocket() {
   setStatus("Connecting to tunnel:\n" + serverUrl);
 
   ws = new WebSocket(serverUrl);
-  ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
     sendJson({
@@ -456,34 +452,40 @@ function connectWebSocket() {
     setStatus("Disconnected from tunnel\nCode: " + event.code);
   };
 
-  ws.onmessage = async (event) => {
-    if (typeof event.data === "string") {
-      const msg = JSON.parse(event.data);
+  ws.onmessage = (event) => {
+    const msg = JSON.parse(event.data);
 
-      if (msg.type === "joined") {
-        if (role === "tablet") initTablet();
-        if (role === "client") initClient();
-      }
-
-      if (msg.type === "stream-start") {
-        if (role === "client") {
-          remoteViewer.style.display = "flex";
-          setStatus("Receiving screen frames...");
-        }
-      }
-
-      if (msg.type === "stream-stop") {
-        if (role === "client") {
-          clearRemote();
-          setStatus("Stream stopped");
-        }
-      }
-
-      return;
+    if (msg.type === "joined") {
+      if (role === "tablet") initTablet();
+      if (role === "client") initClient();
     }
 
-    if (role === "client") {
-      drawFrame(event.data);
+    if (msg.type === "stream-start") {
+      if (role === "client") {
+        remoteViewer.style.display = "flex";
+        setStatus("Receiving screen...");
+      }
+    }
+
+    if (msg.type === "frame") {
+      if (role === "client") {
+        remoteImage.src = msg.dataUrl;
+        remoteViewer.style.display = "flex";
+        frameCount++;
+
+        if (frameCount === 1) {
+          setStatus("Screen received ✅");
+        }
+      }
+    }
+
+    if (msg.type === "stream-stop") {
+      if (role === "client") {
+        remoteImage.removeAttribute("src");
+        remoteViewer.style.display = "none";
+        frameCount = 0;
+        setStatus("Stream stopped");
+      }
     }
   };
 }
@@ -527,8 +529,7 @@ async function startTabletScreen() {
     streaming = true;
 
     sendJson({
-      type: "stream-start",
-      mimeType: MIME_TYPE
+      type: "stream-start"
     });
 
     startTabletBtn.style.display = "none";
@@ -541,7 +542,7 @@ async function startTabletScreen() {
 
     frameLoop();
 
-    setStatus("Streaming screen frames through tunnel");
+    setStatus("Streaming screen through tunnel");
 
   } catch (err) {
     setError("Screen share failed:\n" + (err.message || err.name || err));
@@ -560,7 +561,7 @@ function sendFrame() {
   if (encoding) return;
   if (!hiddenVideo.videoWidth || !hiddenVideo.videoHeight) return;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  if (ws.bufferedAmount > 3 * 1024 * 1024) return;
+  if (ws.bufferedAmount > 4 * 1024 * 1024) return;
 
   encoding = true;
 
@@ -578,64 +579,14 @@ function sendFrame() {
 
   captureCtx.drawImage(hiddenVideo, 0, 0, width, height);
 
-  captureCanvas.toBlob(async (blob) => {
-    encoding = false;
+  const dataUrl = captureCanvas.toDataURL(MIME_TYPE, QUALITY);
 
-    if (!blob || !ws || ws.readyState !== WebSocket.OPEN) return;
+  encoding = false;
 
-    const buffer = await blob.arrayBuffer();
-    ws.send(buffer);
-  }, MIME_TYPE, QUALITY);
-}
-
-async function drawFrame(arrayBuffer) {
-  const blob = new Blob([arrayBuffer], { type: MIME_TYPE });
-
-  try {
-    const bitmap = await createImageBitmap(blob);
-
-    if (drawing) {
-      if (pendingBitmap) pendingBitmap.close();
-      pendingBitmap = bitmap;
-      return;
-    }
-
-    drawing = true;
-    renderBitmap(bitmap);
-    drawing = false;
-
-    if (pendingBitmap) {
-      const next = pendingBitmap;
-      pendingBitmap = null;
-      renderBitmap(next);
-    }
-
-  } catch (err) {
-    setError("Frame decode error:\n" + (err.message || err.name || err));
-  }
-}
-
-function renderBitmap(bitmap) {
-  if (remoteCanvas.width !== bitmap.width || remoteCanvas.height !== bitmap.height) {
-    remoteCanvas.width = bitmap.width;
-    remoteCanvas.height = bitmap.height;
-  }
-
-  remoteCtx.drawImage(bitmap, 0, 0, remoteCanvas.width, remoteCanvas.height);
-  bitmap.close();
-
-  frameCount++;
-
-  if (frameCount === 1) {
-    remoteViewer.style.display = "flex";
-    setStatus("Screen received ✅");
-  }
-}
-
-function clearRemote() {
-  remoteCtx.clearRect(0, 0, remoteCanvas.width, remoteCanvas.height);
-  remoteViewer.style.display = "none";
-  frameCount = 0;
+  sendJson({
+    type: "frame",
+    dataUrl
+  });
 }
 
 function stopTabletStream() {
