@@ -1,7 +1,8 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Tunnel Screen Stream</title, initial-scale=1.0, viewport-fit=cover">  <title>Tunnel Screen Stream</title>
+  <title>Tunnel Screen Stream</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
   <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
 
@@ -164,14 +165,14 @@
       display: none;
       align-items: center;
       justify-content: center;
+      position: relative;
     }
 
-    #remoteImage {
+    #remoteCanvas {
       width: 100%;
       height: 100%;
-      object-fit: contain;
-      background: #000;
       display: block;
+      background: #000;
     }
 
     #hiddenVideo,
@@ -195,10 +196,9 @@
       display: flex !important;
     }
 
-    .viewer:fullscreen #remoteImage {
+    .viewer:fullscreen #remoteCanvas {
       width: 100vw;
       height: 100dvh;
-      object-fit: contain;
     }
 
     #qrWrap {
@@ -302,7 +302,7 @@
     </div>
 
     <div id="remoteViewer" class="viewer">
-      <img id="remoteImage" alt="Remote tablet screen">
+      <canvas id="remoteCanvas"></canvas>
     </div>
   </div>
 </div>
@@ -339,7 +339,8 @@ const qrWrap = document.getElementById("qrWrap");
 const qrCanvas = document.getElementById("qr");
 
 const remoteViewer = document.getElementById("remoteViewer");
-const remoteImage = document.getElementById("remoteImage");
+const remoteCanvas = document.getElementById("remoteCanvas");
+const remoteCtx = remoteCanvas.getContext("2d");
 
 const hiddenVideo = document.getElementById("hiddenVideo");
 const captureCanvas = document.getElementById("captureCanvas");
@@ -469,21 +470,13 @@ function connectWebSocket() {
 
     if (msg.type === "frame") {
       if (role === "client") {
-        remoteImage.src = msg.dataUrl;
-        remoteViewer.style.display = "flex";
-        frameCount++;
-
-        if (frameCount === 1) {
-          setStatus("Screen received ✅");
-        }
+        drawFrame(msg.dataUrl);
       }
     }
 
     if (msg.type === "stream-stop") {
       if (role === "client") {
-        remoteImage.removeAttribute("src");
-        remoteViewer.style.display = "none";
-        frameCount = 0;
+        clearRemote();
         setStatus("Stream stopped");
       }
     }
@@ -568,66 +561,3 @@ function sendFrame() {
   let width = hiddenVideo.videoWidth;
   let height = hiddenVideo.videoHeight;
 
-  if (width > MAX_WIDTH) {
-    const scale = MAX_WIDTH / width;
-    width = MAX_WIDTH;
-    height = Math.round(height * scale);
-  }
-
-  captureCanvas.width = width;
-  captureCanvas.height = height;
-
-  captureCtx.drawImage(hiddenVideo, 0, 0, width, height);
-
-  const dataUrl = captureCanvas.toDataURL(MIME_TYPE, QUALITY);
-
-  encoding = false;
-
-  sendJson({
-    type: "frame",
-    dataUrl
-  });
-}
-
-function stopTabletStream() {
-  streaming = false;
-
-  if (localStream) {
-    localStream.getTracks().forEach(track => track.stop());
-  }
-
-  localStream = null;
-  hiddenVideo.srcObject = null;
-
-  sendJson({
-    type: "stream-stop"
-  });
-
-  startTabletBtn.style.display = "inline-block";
-  stopTabletBtn.style.display = "none";
-  tabletOverlay.style.display = "none";
-
-  setStatus("Stream stopped");
-}
-
-async function fullscreenViewer() {
-  remoteViewer.style.display = "flex";
-
-  try {
-    await remoteViewer.requestFullscreen();
-  } catch {}
-}
-
-startTabletBtn.onclick = startTabletScreen;
-stopTabletBtn.onclick = stopTabletStream;
-
-if (!role || !serverUrl) {
-  setupBox.style.display = "block";
-  setStatus("Insert tunnel URL and choose Tablet or Client");
-} else {
-  connectWebSocket();
-}
-</script>
-
-</body>
-</html>
