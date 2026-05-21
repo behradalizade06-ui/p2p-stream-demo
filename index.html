@@ -184,24 +184,6 @@
       background: #000;
       display: block;
       object-fit: contain;
-      transform-origin: center center;
-    }
-
-    #localViewer {
-      position: fixed;
-      left: -10000px;
-      top: -10000px;
-      width: 320px;
-      height: 180px;
-      opacity: 0.01;
-      pointer-events: none;
-      display: flex;
-    }
-
-    #localVideo {
-      width: 320px;
-      height: 180px;
-      opacity: 0.01;
     }
 
     #remoteViewer {
@@ -224,6 +206,31 @@
       padding: 16px;
       border-radius: 22px;
       background: white;
+    }
+
+    #tabletStreamingOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: #000;
+      color: white;
+      z-index: 999999;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 24px;
+    }
+
+    #tabletStreamingOverlay h2 {
+      color: var(--green2);
+      font-size: 28px;
+      margin-bottom: 12px;
+    }
+
+    #tabletStreamingOverlay p {
+      color: white;
+      font-size: 18px;
+      line-height: 1.4;
     }
 
     .viewer-toolbar {
@@ -286,15 +293,6 @@
       object-fit: contain;
     }
 
-    .rotated {
-      transform: rotate(90deg);
-      width: 100dvh !important;
-      height: 100vw !important;
-      max-width: none !important;
-      max-height: none !important;
-      object-fit: contain !important;
-    }
-
     @media (orientation: portrait) {
       .header {
         flex-direction: column;
@@ -349,7 +347,6 @@
       <button id="startTabletBtn" style="display:none;">Start Tablet Screen</button>
       <button id="stopTabletBtn" class="danger" style="display:none;">Stop Stream</button>
       <button id="fullscreenBtn" class="secondary" style="display:none;" onclick="enterViewerFullscreen()">Fullscreen</button>
-      <button id="rotateBtn" class="secondary" style="display:none;" onclick="toggleRotate()">Rotate View</button>
       <button id="audioBtn" class="secondary" style="display:none;" onclick="enableAudio()">Enable Audio</button>
       <button id="retryBtn" class="secondary" style="display:none;" onclick="retryClient()">Retry</button>
     </div>
@@ -361,19 +358,22 @@
       </div>
     </div>
 
-    <div id="localViewer" class="viewer">
-      <video id="localVideo" autoplay muted playsinline></video>
-    </div>
-
     <div id="remoteViewer" class="viewer">
       <video id="remoteVideo" autoplay muted playsinline></video>
     </div>
   </div>
 </div>
 
+<div id="tabletStreamingOverlay">
+  <div>
+    <h2>Streaming Active</h2>
+    <p>Now switch to the real app/content you want to show.</p>
+    <p>Do not stay on this streaming page.</p>
+  </div>
+</div>
+
 <div id="viewerToolbar" class="viewer-toolbar">
   <button onclick="exitViewerFullscreen()">Exit</button>
-  <button onclick="toggleRotate()">Rotate</button>
   <button onclick="enableAudio()">Audio</button>
 </div>
 
@@ -393,33 +393,30 @@ const errorBox = document.getElementById("error");
 const startTabletBtn = document.getElementById("startTabletBtn");
 const stopTabletBtn = document.getElementById("stopTabletBtn");
 const fullscreenBtn = document.getElementById("fullscreenBtn");
-const rotateBtn = document.getElementById("rotateBtn");
 const audioBtn = document.getElementById("audioBtn");
 const retryBtn = document.getElementById("retryBtn");
 
 const qrWrap = document.getElementById("qrWrap");
 const qrCanvas = document.getElementById("qr");
 
-const localViewer = document.getElementById("localViewer");
 const remoteViewer = document.getElementById("remoteViewer");
+const remoteVideo = document.getElementById("remoteVideo");
 const viewerToolbar = document.getElementById("viewerToolbar");
 
-const localVideo = document.getElementById("localVideo");
-const remoteVideo = document.getElementById("remoteVideo");
+const tabletStreamingOverlay = document.getElementById("tabletStreamingOverlay");
 
 let ws = null;
 let localStream = null;
 let peers = {};
 let pendingClients = new Set();
-let rotated = false;
-let clientIdSelf = null;
 
 let clientIceQueue = [];
 let tabletIceQueues = {};
+let forceRelayMode = false;
 
-function buildRtcConfig(forceRelay) {
+function rtcConfig() {
   return {
-    iceTransportPolicy: forceRelay ? "relay" : "all",
+    iceTransportPolicy: forceRelayMode ? "relay" : "all",
     iceServers: [
       { urls: "stun:stun.l.google.com:19302" },
 
@@ -451,8 +448,6 @@ function buildRtcConfig(forceRelay) {
     ]
   };
 }
-
-let forceRelayMode = false;
 
 function setStatus(text) {
   statusBox.innerText = text;
@@ -526,7 +521,7 @@ function send(data) {
 }
 
 async function enterViewerFullscreen() {
-  const viewer = role === "tablet" ? localViewer : remoteViewer;
+  const viewer = remoteViewer;
 
   viewer.style.display = "flex";
   viewerToolbar.style.display = "flex";
@@ -551,31 +546,17 @@ async function exitViewerFullscreen() {
     await document.exitFullscreen();
   }
 
-  localViewer.classList.remove("fullscreen-fallback");
   remoteViewer.classList.remove("fullscreen-fallback");
 }
 
 document.addEventListener("fullscreenchange", () => {
   if (!document.fullscreenElement) {
     viewerToolbar.style.display = "none";
-    localViewer.classList.remove("fullscreen-fallback");
     remoteViewer.classList.remove("fullscreen-fallback");
   } else {
     viewerToolbar.style.display = "flex";
   }
 });
-
-function toggleRotate() {
-  rotated = !rotated;
-
-  if (rotated) {
-    localVideo.classList.add("rotated");
-    remoteVideo.classList.add("rotated");
-  } else {
-    localVideo.classList.remove("rotated");
-    remoteVideo.classList.remove("rotated");
-  }
-}
 
 async function enableAudio() {
   try {
@@ -642,7 +623,6 @@ function connectWebSocket() {
       if (role === "tablet") initTabletUi();
 
       if (role === "client") {
-        clientIdSelf = msg.id;
         initClientUi();
         send({ type: "client-ready" });
       }
@@ -734,7 +714,6 @@ function initTabletUi() {
 
   startTabletBtn.style.display = "inline-block";
   fullscreenBtn.style.display = "none";
-  rotateBtn.style.display = "none";
   audioBtn.style.display = "none";
   retryBtn.style.display = "none";
 
@@ -755,7 +734,6 @@ function initClientUi() {
   setStatus("Client connected. Waiting for tablet stream...");
 
   fullscreenBtn.style.display = "inline-block";
-  rotateBtn.style.display = "inline-block";
   audioBtn.style.display = "inline-block";
   retryBtn.style.display = "inline-block";
 }
@@ -768,23 +746,20 @@ async function startTabletScreen() {
         width: { ideal: 1280 },
         height: { ideal: 720 }
       },
-      audio: true
+      audio: false
     });
 
-    localVideo.srcObject = localStream;
-    localVideo.muted = true;
-    localVideo.playsInline = true;
+    const videoTrack = localStream.getVideoTracks()[0];
 
-    localViewer.style.display = "flex";
-
-    try {
-      await localVideo.play();
-    } catch {}
+    if (!videoTrack) {
+      setError("No video track captured.");
+      return;
+    }
 
     startTabletBtn.style.display = "none";
     stopTabletBtn.style.display = "inline-block";
 
-    localStream.getVideoTracks()[0].onended = () => {
+    videoTrack.onended = () => {
       stopTabletStream();
     };
 
@@ -794,7 +769,8 @@ async function startTabletScreen() {
 
     pendingClients.clear();
 
-    setStatus("Streaming WebRTC video/audio");
+    setStatus("Streaming active. Now switch to the real content.");
+    tabletStreamingOverlay.style.display = "flex";
 
   } catch (err) {
     setError("Screen share failed:\n" + (err.message || err.name || err));
@@ -812,7 +788,7 @@ async function createOfferForClient(clientId) {
     delete peers[clientId];
   }
 
-  const pc = new RTCPeerConnection(buildRtcConfig(forceRelayMode));
+  const pc = new RTCPeerConnection(rtcConfig());
   peers[clientId] = pc;
   tabletIceQueues[clientId] = [];
 
@@ -830,13 +806,7 @@ async function createOfferForClient(clientId) {
     }
   };
 
-  pc.oniceconnectionstatechange = () => {
-    console.log("Tablet ICE:", pc.iceConnectionState);
-  };
-
   pc.onconnectionstatechange = () => {
-    console.log("Tablet PC:", pc.connectionState);
-
     if (pc.connectionState === "connected") {
       setStatus("Streaming to client: " + clientId);
     }
@@ -863,13 +833,13 @@ async function receiveOffer(offer) {
 
   clientIceQueue = [];
 
-  const pc = new RTCPeerConnection(buildRtcConfig(forceRelayMode));
+  const pc = new RTCPeerConnection(rtcConfig());
   peers.main = pc;
 
   const remoteStream = new MediaStream();
   remoteVideo.srcObject = remoteStream;
 
-  let gotVideoFrame = false;
+  let gotVideo = false;
 
   pc.ontrack = async (event) => {
     remoteStream.addTrack(event.track);
@@ -886,21 +856,15 @@ async function receiveOffer(offer) {
     } catch {}
 
     if (event.track.kind === "video") {
+      gotVideo = true;
+      setStatus("Video track received ✅");
+
       event.track.onunmute = async () => {
         try {
           await remoteVideo.play();
         } catch {}
       };
-
-      if ("requestVideoFrameCallback" in remoteVideo) {
-        remoteVideo.requestVideoFrameCallback(() => {
-          gotVideoFrame = true;
-          setStatus("Video frame received ✅");
-        });
-      }
     }
-
-    setStatus("Receiving WebRTC stream");
   };
 
   pc.onicecandidate = (event) => {
@@ -912,21 +876,9 @@ async function receiveOffer(offer) {
     }
   };
 
-  pc.oniceconnectionstatechange = () => {
-    console.log("Client ICE:", pc.iceConnectionState);
-  };
-
   pc.onconnectionstatechange = () => {
-    console.log("Client PC:", pc.connectionState);
-
     if (pc.connectionState === "connected") {
-      setStatus("WebRTC connected. Waiting for video frame...");
-
-      setTimeout(() => {
-        if (!gotVideoFrame) {
-          setError("Connected but no video frame. Press Retry.");
-        }
-      }, 4000);
+      setStatus(gotVideo ? "WebRTC stream connected ✅" : "Connected, waiting video...");
     }
 
     if (pc.connectionState === "failed") {
@@ -972,6 +924,7 @@ function stopTabletStream() {
 
   startTabletBtn.style.display = "inline-block";
   stopTabletBtn.style.display = "none";
+  tabletStreamingOverlay.style.display = "none";
 
   setStatus("Stream stopped");
 }
