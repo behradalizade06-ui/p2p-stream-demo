@@ -414,37 +414,45 @@ let pendingClients = new Set();
 let rotated = false;
 let clientIdSelf = null;
 
-const rtcConfig = {
-  iceTransportPolicy: "relay",
-  iceCandidatePoolSize: 0,
-  iceServers: [
-    {
-      urls: "turn:openrelay.metered.ca:80",
-      username: "openrelayproject",
-      credential: "openrelayproject"
-    },
-    {
-      urls: "turn:openrelay.metered.ca:80?transport=tcp",
-      username: "openrelayproject",
-      credential: "openrelayproject"
-    },
-    {
-      urls: "turn:openrelay.metered.ca:443",
-      username: "openrelayproject",
-      credential: "openrelayproject"
-    },
-    {
-      urls: "turn:openrelay.metered.ca:443?transport=tcp",
-      username: "openrelayproject",
-      credential: "openrelayproject"
-    },
-    {
-      urls: "turns:openrelay.metered.ca:443?transport=tcp",
-      username: "openrelayproject",
-      credential: "openrelayproject"
-    }
-  ]
-};
+let clientIceQueue = [];
+let tabletIceQueues = {};
+
+function buildRtcConfig(forceRelay) {
+  return {
+    iceTransportPolicy: forceRelay ? "relay" : "all",
+    iceServers: [
+      { urls: "stun:stun.l.google.com:19302" },
+
+      {
+        urls: "turn:openrelay.metered.ca:80",
+        username: "openrelayproject",
+        credential: "openrelayproject"
+      },
+      {
+        urls: "turn:openrelay.metered.ca:80?transport=tcp",
+        username: "openrelayproject",
+        credential: "openrelayproject"
+      },
+      {
+        urls: "turn:openrelay.metered.ca:443",
+        username: "openrelayproject",
+        credential: "openrelayproject"
+      },
+      {
+        urls: "turn:openrelay.metered.ca:443?transport=tcp",
+        username: "openrelayproject",
+        credential: "openrelayproject"
+      },
+      {
+        urls: "turns:openrelay.metered.ca:443?transport=tcp",
+        username: "openrelayproject",
+        credential: "openrelayproject"
+      }
+    ]
+  };
+}
+
+let forceRelayMode = false;
 
 function setStatus(text) {
   statusBox.innerText = text;
@@ -517,21 +525,6 @@ function send(data) {
   }
 }
 
-async function waitIceComplete(pc) {
-  if (pc.iceGatheringState === "complete") return;
-
-  await new Promise(resolve => {
-    const timeout = setTimeout(resolve, 3000);
-
-    pc.addEventListener("icegatheringstatechange", () => {
-      if (pc.iceGatheringState === "complete") {
-        clearTimeout(timeout);
-        resolve();
-      }
-    });
-  });
-}
-
 async function enterViewerFullscreen() {
   const viewer = role === "tablet" ? localViewer : remoteViewer;
 
@@ -596,19 +589,20 @@ async function enableAudio() {
 }
 
 function retryClient() {
+  forceRelayMode = !forceRelayMode;
+
   if (peers.main) {
     peers.main.close();
     peers.main = null;
   }
 
+  clientIceQueue = [];
   remoteVideo.srcObject = null;
   remoteViewer.style.display = "none";
 
-  send({
-    type: "client-ready"
-  });
+  send({ type: "client-ready" });
 
-  setStatus("Retrying connection...");
+  setStatus(forceRelayMode ? "Retrying with TURN relay..." : "Retrying normal WebRTC...");
 }
 
 function connectWebSocket() {
@@ -619,7 +613,6 @@ function connectWebSocket() {
   }
 
   serverUrl = normalizeServerUrl(serverUrl);
-
   setStatus("Connecting to signaling tunnel:\n" + serverUrl);
 
   ws = new WebSocket(serverUrl);
@@ -646,17 +639,12 @@ function connectWebSocket() {
     const msg = JSON.parse(event.data);
 
     if (msg.type === "joined") {
-      if (role === "tablet") {
-        initTabletUi();
-      }
+      if (role === "tablet") initTabletUi();
 
       if (role === "client") {
         clientIdSelf = msg.id;
         initClientUi();
-
-        send({
-          type: "client-ready"
-        });
+        send({ type: "client-ready" });
       }
     }
 
@@ -683,6 +671,43 @@ function connectWebSocket() {
 
         if (pc) {
           await pc.setRemoteDescription(msg.answer);
+
+          if (tabletIceQueues[msg.clientId]) {
+            for (const c of tabletIceQueues[msg.clientId]) {
+              try {
+                await pc.addIceCandidate(c);
+              } catch {}
+            }
+
+            tabletIceQueues[msg.clientId] = [];
+          }
+        }
+      }
+    }
+
+    if (msg.type === "ice") {
+      if (role === "tablet") {
+        const pc = peers[msg.clientId];
+
+        if (pc && pc.remoteDescription) {
+          try {
+            await pc.addIceCandidate(msg.candidate);
+          } catch {}
+        } else {
+          if (!tabletIceQueues[msg.clientId]) tabletIceQueues[msg.clientId] = [];
+          tabletIceQueues[msg.clientId].push(msg.candidate);
+        }
+      }
+
+      if (role === "client") {
+        const pc = peers.main;
+
+        if (pc && pc.remoteDescription) {
+          try {
+            await pc.addIceCandidate(msg.candidate);
+          } catch {}
+        } else {
+          clientIceQueue.push(msg.candidate);
         }
       }
     }
@@ -697,6 +722,8 @@ function connectWebSocket() {
           pc.close();
           delete peers[msg.clientId];
         }
+
+        delete tabletIceQueues[msg.clientId];
       }
     }
   };
@@ -721,7 +748,6 @@ function initTabletUi() {
     encodeURIComponent(serverUrl);
 
   qrWrap.style.display = "block";
-
   QRCode.toCanvas(qrCanvas, clientUrl);
 }
 
@@ -748,6 +774,7 @@ async function startTabletScreen() {
     localVideo.srcObject = localStream;
     localVideo.muted = true;
     localVideo.playsInline = true;
+
     localViewer.style.display = "flex";
 
     try {
@@ -785,14 +812,23 @@ async function createOfferForClient(clientId) {
     delete peers[clientId];
   }
 
-  const pc = new RTCPeerConnection(rtcConfig);
+  const pc = new RTCPeerConnection(buildRtcConfig(forceRelayMode));
   peers[clientId] = pc;
+  tabletIceQueues[clientId] = [];
 
   localStream.getTracks().forEach(track => {
     pc.addTrack(track, localStream);
   });
 
-  pc.onicecandidate = () => {};
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      send({
+        type: "ice",
+        clientId,
+        candidate: event.candidate
+      });
+    }
+  };
 
   pc.oniceconnectionstatechange = () => {
     console.log("Tablet ICE:", pc.iceConnectionState);
@@ -806,14 +842,12 @@ async function createOfferForClient(clientId) {
     }
 
     if (pc.connectionState === "failed") {
-      setError("WebRTC failed for client. Press Retry on client.");
+      setError("WebRTC failed for client. Press Retry on phone.");
     }
   };
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
-
-  await waitIceComplete(pc);
 
   send({
     type: "offer",
@@ -827,11 +861,15 @@ async function receiveOffer(offer) {
     peers.main.close();
   }
 
-  const pc = new RTCPeerConnection(rtcConfig);
+  clientIceQueue = [];
+
+  const pc = new RTCPeerConnection(buildRtcConfig(forceRelayMode));
   peers.main = pc;
 
   const remoteStream = new MediaStream();
   remoteVideo.srcObject = remoteStream;
+
+  let gotVideoFrame = false;
 
   pc.ontrack = async (event) => {
     remoteStream.addTrack(event.track);
@@ -847,16 +885,32 @@ async function receiveOffer(offer) {
       await remoteVideo.play();
     } catch {}
 
-    event.track.onunmute = async () => {
-      try {
-        await remoteVideo.play();
-      } catch {}
-    };
+    if (event.track.kind === "video") {
+      event.track.onunmute = async () => {
+        try {
+          await remoteVideo.play();
+        } catch {}
+      };
+
+      if ("requestVideoFrameCallback" in remoteVideo) {
+        remoteVideo.requestVideoFrameCallback(() => {
+          gotVideoFrame = true;
+          setStatus("Video frame received ✅");
+        });
+      }
+    }
 
     setStatus("Receiving WebRTC stream");
   };
 
-  pc.onicecandidate = () => {};
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      send({
+        type: "ice",
+        candidate: event.candidate
+      });
+    }
+  };
 
   pc.oniceconnectionstatechange = () => {
     console.log("Client ICE:", pc.iceConnectionState);
@@ -866,7 +920,13 @@ async function receiveOffer(offer) {
     console.log("Client PC:", pc.connectionState);
 
     if (pc.connectionState === "connected") {
-      setStatus("WebRTC stream connected");
+      setStatus("WebRTC connected. Waiting for video frame...");
+
+      setTimeout(() => {
+        if (!gotVideoFrame) {
+          setError("Connected but no video frame. Press Retry.");
+        }
+      }, 4000);
     }
 
     if (pc.connectionState === "failed") {
@@ -876,10 +936,16 @@ async function receiveOffer(offer) {
 
   await pc.setRemoteDescription(offer);
 
+  for (const c of clientIceQueue) {
+    try {
+      await pc.addIceCandidate(c);
+    } catch {}
+  }
+
+  clientIceQueue = [];
+
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);
-
-  await waitIceComplete(pc);
 
   send({
     type: "answer",
@@ -895,6 +961,8 @@ function stopTabletStream() {
 
   peers = {};
   pendingClients.clear();
+  tabletIceQueues = {};
+  clientIceQueue = [];
 
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
