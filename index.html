@@ -1,10 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Adaptive Screen Stream</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-
-  https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.jsscript>
+  <title>Low Latency Screen/build/qrcode.min.js"></script>  <title>Low Latency Screen Stream</title>
 
   <style>
     :root {
@@ -242,7 +239,7 @@
         <div class="dot"></div>
         <h1>Screen Stream</h1>
       </div>
-      <div class="subtitle">Adaptive stream optimized for fluidity</div>
+      <div class="subtitle">Binary tunnel stream optimized for low latency</div>
     </div>
 
     <button class="secondary" onclick="fullscreenViewer()">Fullscreen</button>
@@ -324,21 +321,21 @@ let frameCount = 0;
 let lastImage = null;
 let seq = 0;
 
+const HEADER_SIZE = 24;
 const TARGET_FPS = 24;
 const MAX_DELAY_MS = 1000;
 const FRAME_INTERVAL = 1000 / TARGET_FPS;
 const MIME_TYPE = "image/jpeg";
 
 const profiles = [
-  { name: "P0_EMERGENCY", maxWidth: 426, quality: 0.24, bufferLimit: 180 * 1024 },
-  { name: "P1_ULTRA_FLUID", maxWidth: 568, quality: 0.30, bufferLimit: 260 * 1024 },
-  { name: "P2_FAST", maxWidth: 640, quality: 0.36, bufferLimit: 350 * 1024 },
-  { name: "P3_BALANCED", maxWidth: 720, quality: 0.42, bufferLimit: 500 * 1024 },
-  { name: "P4_DETAIL", maxWidth: 854, quality: 0.50, bufferLimit: 700 * 1024 },
-  { name: "P5_HIGH", maxWidth: 960, quality: 0.58, bufferLimit: 950 * 1024 }
+  { name: "P0_EMERGENCY", maxWidth: 426, quality: 0.22, bufferLimit: 120 * 1024 },
+  { name: "P1_ULTRA_FLUID", maxWidth: 568, quality: 0.28, bufferLimit: 180 * 1024 },
+  { name: "P2_FAST", maxWidth: 640, quality: 0.34, bufferLimit: 250 * 1024 },
+  { name: "P3_BALANCED", maxWidth: 720, quality: 0.40, bufferLimit: 350 * 1024 },
+  { name: "P4_DETAIL", maxWidth: 854, quality: 0.48, bufferLimit: 500 * 1024 }
 ];
 
-let profileIndex = 3;
+let profileIndex = 2;
 let currentProfile = profiles[profileIndex];
 
 let lastFrameSentAt = 0;
@@ -347,16 +344,12 @@ let lastAdaptAt = 0;
 let feedbackAvgDelay = 0;
 let feedbackLastDelay = 0;
 let feedbackFps = 0;
-let feedbackStaleDrops = 0;
-let feedbackServerDrops = 0;
 
 let clientDelaySamples = [];
 let clientFramesThisSecond = 0;
-let clientStaleDrops = 0;
-let clientServerDrops = 0;
 let clientLastFeedbackAt = performance.now();
 
-let latestFrame = null;
+let latestPacket = null;
 let renderScheduled = false;
 let streamTimer = null;
 
@@ -439,6 +432,7 @@ function connectWebSocket() {
   setStatus("Connecting to tunnel:\n" + serverUrl);
 
   ws = new WebSocket(serverUrl);
+  ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
     sendJson({
@@ -459,43 +453,39 @@ function connectWebSocket() {
   };
 
   ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
+    if (typeof event.data === "string") {
+      const msg = JSON.parse(event.data);
 
-    if (msg.type === "joined") {
-      if (role === "tablet") initTablet();
-      if (role === "client") initClient();
+      if (msg.type === "joined") {
+        if (role === "tablet") initTablet();
+        if (role === "client") initClient();
+      }
+
+      if (msg.type === "stream-start") {
+        if (role === "client") {
+          remoteViewer.style.display = "flex";
+          setStatus("Receiving screen...");
+        }
+      }
+
+      if (msg.type === "feedback") {
+        if (role === "tablet") {
+          handleFeedback(msg);
+        }
+      }
+
+      if (msg.type === "stream-stop") {
+        if (role === "client") {
+          clearRemote();
+          setStatus("Stream stopped");
+        }
+      }
+
+      return;
     }
 
-    if (msg.type === "stream-start") {
-      if (role === "client") {
-        remoteViewer.style.display = "flex";
-        setStatus("Receiving screen...");
-      }
-    }
-
-    if (msg.type === "server-drop") {
-      if (role === "client") {
-        clientServerDrops++;
-      }
-    }
-
-    if (msg.type === "frame") {
-      if (role === "client") {
-        receiveClientFrame(msg);
-      }
-    }
-
-    if (msg.type === "feedback") {
-      if (role === "tablet") {
-        handleFeedback(msg);
-      }
-    }
-
-    if (msg.type === "stream-stop") {
-      if (role === "client") {
-        clearRemote();
-        setStatus("Stream stopped");
-      }
+    if (role === "client") {
+      receiveBinaryFrame(event.data);
     }
   };
 }
@@ -618,28 +608,47 @@ function sendFrame() {
 
   captureCtx.drawImage(hiddenVideo, 0, 0, width, height);
 
-  const dataUrl = captureCanvas.toDataURL(MIME_TYPE, currentProfile.quality);
+  captureCanvas.toBlob(async (blob) => {
+    encoding = false;
 
-  encoding = false;
-  seq++;
+    if (!blob || !ws || ws.readyState !== WebSocket.OPEN) return;
 
-  sendJson({
-    type: "frame",
-    seq,
-    sentAt: Date.now(),
-    width,
-    height,
-    profile: currentProfile.name,
-    dataUrl
-  });
+    const imageBuffer = await blob.arrayBuffer();
+
+    seq++;
+
+    const packet = new ArrayBuffer(HEADER_SIZE + imageBuffer.byteLength);
+    const view = new DataView(packet);
+    const bytes = new Uint8Array(packet);
+
+    view.setUint32(0, seq);
+    view.setFloat64(4, Date.now());
+    view.setUint16(12, width);
+    view.setUint16(14, height);
+    view.setUint8(16, profileIndex);
+    view.setUint8(17, 0);
+    view.setUint32(18, imageBuffer.byteLength);
+
+    bytes.set(new Uint8Array(imageBuffer), HEADER_SIZE);
+
+    ws.send(packet);
+  }, MIME_TYPE, currentProfile.quality);
 }
 
-function receiveClientFrame(msg) {
+function receiveBinaryFrame(arrayBuffer) {
+  const view = new DataView(arrayBuffer);
+
+  const frameSeq = view.getUint32(0);
+  const sentAt = view.getFloat64(4);
+  const width = view.getUint16(12);
+  const height = view.getUint16(14);
+  const profile = view.getUint8(16);
+  const payloadSize = view.getUint32(18);
+
   const now = Date.now();
-  const delay = now - msg.sentAt;
+  const delay = now - sentAt;
 
   if (delay > MAX_DELAY_MS) {
-    clientStaleDrops++;
     sendFeedbackIfNeeded(delay);
     return;
   }
@@ -650,26 +659,50 @@ function receiveClientFrame(msg) {
     clientDelaySamples.shift();
   }
 
-  latestFrame = msg;
+  const payload = arrayBuffer.slice(HEADER_SIZE, HEADER_SIZE + payloadSize);
+
+  latestPacket = {
+    seq: frameSeq,
+    sentAt,
+    width,
+    height,
+    profile,
+    payload
+  };
+
   clientFramesThisSecond++;
 
   if (!renderScheduled) {
     renderScheduled = true;
-    requestAnimationFrame(renderLatestFrame);
+    requestAnimationFrame(renderLatestPacket);
   }
 
   sendFeedbackIfNeeded(delay);
 }
 
-function renderLatestFrame() {
+async function renderLatestPacket() {
   renderScheduled = false;
 
-  if (!latestFrame) return;
+  if (!latestPacket) return;
 
-  const frame = latestFrame;
-  latestFrame = null;
+  const packet = latestPacket;
+  latestPacket = null;
 
-  drawFrame(frame.dataUrl);
+  try {
+    const blob = new Blob([packet.payload], { type: MIME_TYPE });
+    const bitmap = await createImageBitmap(blob);
+
+    resizeRemoteCanvas();
+    renderBitmapContain(bitmap);
+
+    bitmap.close();
+
+    frameCount++;
+
+    if (frameCount === 1) {
+      setStatus("Screen received");
+    }
+  } catch {}
 }
 
 function sendFeedbackIfNeeded(lastDelay) {
@@ -685,14 +718,10 @@ function sendFeedbackIfNeeded(lastDelay) {
     type: "feedback",
     avgDelay: Math.round(avgDelay || lastDelay || 0),
     lastDelay: Math.round(lastDelay || 0),
-    receivedFps: clientFramesThisSecond,
-    staleDrops: clientStaleDrops,
-    serverDrops: clientServerDrops
+    receivedFps: clientFramesThisSecond
   });
 
   clientFramesThisSecond = 0;
-  clientStaleDrops = 0;
-  clientServerDrops = 0;
   clientLastFeedbackAt = now;
 }
 
@@ -700,8 +729,6 @@ function handleFeedback(msg) {
   feedbackAvgDelay = msg.avgDelay;
   feedbackLastDelay = msg.lastDelay;
   feedbackFps = msg.receivedFps;
-  feedbackStaleDrops = msg.staleDrops;
-  feedbackServerDrops = msg.serverDrops;
 
   const now = performance.now();
 
@@ -709,21 +736,21 @@ function handleFeedback(msg) {
 
   lastAdaptAt = now;
 
-  if (msg.avgDelay > 1000 || msg.staleDrops > 0 || msg.receivedFps < 20) {
+  if (msg.avgDelay > 900 || msg.receivedFps < 20) {
     profileIndex = Math.max(0, profileIndex - 2);
     currentProfile = profiles[profileIndex];
     updateTabletStatus("Aggressive downgrade");
     return;
   }
 
-  if (msg.avgDelay > 700 || msg.receivedFps < 22) {
+  if (msg.avgDelay > 600 || msg.receivedFps < 22) {
     profileIndex = Math.max(0, profileIndex - 1);
     currentProfile = profiles[profileIndex];
     updateTabletStatus("Downgrade");
     return;
   }
 
-  if (msg.avgDelay < 350 && msg.receivedFps >= 23 && msg.staleDrops === 0) {
+  if (msg.avgDelay < 250 && msg.receivedFps >= 23) {
     profileIndex = Math.min(profiles.length - 1, profileIndex + 1);
     currentProfile = profiles[profileIndex];
     updateTabletStatus("Upgrade");
@@ -735,36 +762,15 @@ function handleFeedback(msg) {
 
 function updateTabletStatus(reason) {
   setStatus(
-    "Streaming adaptive\n" +
+    "Streaming binary low latency\n" +
     "Target FPS: 24\n" +
     "Profile: " + currentProfile.name + "\n" +
     "Width: " + currentProfile.maxWidth + "\n" +
     "Quality: " + currentProfile.quality + "\n" +
     "Phone FPS: " + feedbackFps + "\n" +
-    "Avg delay: " + feedbackAvgDelay + " ms\n" +
+    "Delay: " + feedbackAvgDelay + " ms\n" +
     reason
   );
-}
-
-function drawFrame(dataUrl) {
-  const img = new Image();
-
-  img.onload = () => {
-    lastImage = img;
-
-    resizeRemoteCanvas();
-    renderContain(img);
-
-    remoteViewer.style.display = "flex";
-
-    frameCount++;
-
-    if (frameCount === 1) {
-      setStatus("Screen received");
-    }
-  };
-
-  img.src = dataUrl;
 }
 
 function resizeRemoteCanvas() {
@@ -780,12 +786,12 @@ function resizeRemoteCanvas() {
   }
 }
 
-function renderContain(img) {
+function renderBitmapContain(bitmap) {
   const canvasW = remoteCanvas.width;
   const canvasH = remoteCanvas.height;
 
-  const imgW = img.naturalWidth;
-  const imgH = img.naturalHeight;
+  const imgW = bitmap.width;
+  const imgH = bitmap.height;
 
   const scale = Math.min(canvasW / imgW, canvasH / imgH);
 
@@ -797,7 +803,7 @@ function renderContain(img) {
 
   remoteCtx.fillStyle = "#000";
   remoteCtx.fillRect(0, 0, canvasW, canvasH);
-  remoteCtx.drawImage(img, x, y, drawW, drawH);
+  remoteCtx.drawImage(bitmap, x, y, drawW, drawH);
 }
 
 function clearRemote() {
@@ -840,20 +846,10 @@ async function fullscreenViewer() {
   } catch {}
 }
 
-window.addEventListener("resize", () => {
-  if (lastImage) {
-    resizeRemoteCanvas();
-    renderContain(lastImage);
-  }
-});
+window.addEventListener("resize", resizeRemoteCanvas);
 
 document.addEventListener("fullscreenchange", () => {
-  if (lastImage) {
-    setTimeout(() => {
-      resizeRemoteCanvas();
-      renderContain(lastImage);
-    }, 150);
-  }
+  setTimeout(resizeRemoteCanvas, 150);
 });
 
 startTabletBtn.onclick = startTabletScreen;
@@ -869,3 +865,6 @@ if (!role || !serverUrl) {
 
 </body>
 </html>
+
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
