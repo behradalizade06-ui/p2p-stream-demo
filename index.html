@@ -170,7 +170,8 @@
       border-radius: 24px;
       overflow: hidden;
       border: 1px solid rgba(255,255,255,0.12);
-      min-height: 220px;
+      height: 70dvh;
+      min-height: 300px;
       display: none;
       align-items: center;
       justify-content: center;
@@ -179,12 +180,26 @@
 
     video {
       width: 100%;
-      height: auto;
-      max-height: 78dvh;
+      height: 100%;
       background: #000;
       display: block;
       object-fit: contain;
       transform-origin: center center;
+    }
+
+    #localViewer,
+    #localVideo {
+      display: none !important;
+    }
+
+    #remoteViewer {
+      background: #000;
+    }
+
+    #remoteVideo {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
     }
 
     #qrWrap {
@@ -281,14 +296,6 @@
       button {
         width: 100%;
       }
-
-      .viewer {
-        min-height: 60dvh;
-      }
-
-      video {
-        max-height: 72dvh;
-      }
     }
   </style>
 </head>
@@ -346,7 +353,7 @@
     </div>
 
     <div id="remoteViewer" class="viewer">
-      <video id="remoteVideo" autoplay playsinline controls></video>
+      <video id="remoteVideo" autoplay playsinline></video>
     </div>
   </div>
 </div>
@@ -547,6 +554,7 @@ function toggleRotate() {
 async function enableAudio() {
   try {
     remoteVideo.muted = false;
+    remoteVideo.volume = 1;
     await remoteVideo.play();
     setStatus("Audio enabled");
   } catch (err) {
@@ -662,8 +670,9 @@ function initTabletUi() {
   setStatus("Tablet connected. Press Start Tablet Screen.");
 
   startTabletBtn.style.display = "inline-block";
-  fullscreenBtn.style.display = "inline-block";
-  rotateBtn.style.display = "inline-block";
+  fullscreenBtn.style.display = "none";
+  rotateBtn.style.display = "none";
+  audioBtn.style.display = "none";
 
   const clientUrl =
     window.location.origin +
@@ -699,9 +708,13 @@ async function startTabletScreen() {
     });
 
     localVideo.srcObject = localStream;
-    localViewer.style.display = "flex";
+    localVideo.muted = true;
+    localVideo.style.display = "none";
+    localViewer.style.display = "none";
 
-    await localVideo.play();
+    try {
+      await localVideo.play();
+    } catch {}
 
     startTabletBtn.style.display = "none";
     stopTabletBtn.style.display = "inline-block";
@@ -781,13 +794,19 @@ async function receiveOffer(offer) {
 
   pc.ontrack = async (event) => {
     remoteVideo.srcObject = event.streams[0];
+
+    remoteVideo.autoplay = true;
+    remoteVideo.playsInline = true;
+    remoteVideo.controls = false;
+    remoteVideo.muted = true;
+
     remoteViewer.style.display = "flex";
 
     try {
       await remoteVideo.play();
     } catch {}
 
-    setStatus("Receiving real WebRTC stream");
+    setStatus("Receiving WebRTC stream");
   };
 
   pc.onicecandidate = (event) => {
