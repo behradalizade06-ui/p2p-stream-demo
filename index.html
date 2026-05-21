@@ -194,7 +194,37 @@ function createPeer(peerId) {
     pingInterval: 5000,
     config: {
       iceServers: [
-        { urls: "stun:stun.l.google.com:19302" }
+        {
+          urls: "stun:stun.l.google.com:19302"
+        },
+
+        // TURN over UDP 80
+        {
+          urls: "turn:openrelay.metered.ca:80",
+          username: "openrelayproject",
+          credential: "openrelayproject"
+        },
+
+        // TURN over TCP 80
+        {
+          urls: "turn:openrelay.metered.ca:80?transport=tcp",
+          username: "openrelayproject",
+          credential: "openrelayproject"
+        },
+
+        // TURN over UDP 443
+        {
+          urls: "turn:openrelay.metered.ca:443",
+          username: "openrelayproject",
+          credential: "openrelayproject"
+        },
+
+        // TURN over TCP 443
+        {
+          urls: "turn:openrelay.metered.ca:443?transport=tcp",
+          username: "openrelayproject",
+          credential: "openrelayproject"
+        }
       ]
     }
   });
