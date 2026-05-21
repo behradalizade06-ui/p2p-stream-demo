@@ -1,7 +1,15 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <;  <title>Ultra Low Latency Screen Stream</title>
+  <title>Ultra Low Latency Screen Stream</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
+  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #070b0a;
+      --green: #00b050;
       --green2: #19d36f;
       --green3: #00853e;
       --text: #ffffff;
@@ -211,68 +219,7 @@
     @media (orientation: portrait) {
       .header {
         flex-direction: column;
-        align-items: flex-start;
-      }
-
-      .controls {
-        flex-direction: column;
-      }
-
-      button {
-        width: 100%;
-      }
-
-      .viewer {
-        height: 72dvh;
-      }
-    }
-  </style>
-</head>
-
-<body>
-
-<div class="app">
-  <div class="header">
-    <div>
-      <div class="brand">
-        <div class="dot"></div>
-        <h1>Screen Stream</h1>
-      </div>
-      <div class="subtitle">Binary video + audio optimized for low latency</div>
-    </div>
-
-    <button class="secondary" onclick="fullscreenViewer()">Fullscreen</button>
-  </div>
-
-  <div class="panel">
-    <div id="status" class="status">Loading...</div>
-    <div id="error" class="error"></div>
-
-    <div id="setupBox" class="panel" style="display:none;">
-      <p>Paste Cloudflare tunnel URL:</p>
-
-      <input
-        id="serverInput"
-        placeholder="https://xxxxx.trycloudflare.com OR wss://xxxxx.trycloudflare.com"
-      >
-
-      <div class="controls">
-        <button onclick="openAsTablet()">Open as Tablet</button>
-        <button class="secondary" onclick="openAsClient()">Open as Client</button>
-      </div>
-    </div>
-
-    <div class="controls">
-      <button id="startTabletBtn" style="display:none;">Start Tablet Screen</button>
-      <button id="stopTabletBtn" class="danger" style="display:none;">Stop Stream</button>
-      <button id="fullscreenBtn" class="secondary" style="display:none;" onclick="fullscreenViewer()">Fullscreen</button>
-      <button id="audioBtn" class="secondary" style="display:none;" onclick="enableAudio()">Enable Audio</button>
-    </div>
-
-    <div id="qrWrap">
-      <h3>Client QR</h3>
-      <div id="qrBox">
-        <canvas id="qr"></canvas>
+qr"></canvas>        align-items: flex-start;
       </div>
     </div>
 
@@ -1038,10 +985,63 @@ if (!role || !serverUrl) {
 
 </body>
 </html>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+      }
 
-  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+      .controls {
+        flex-direction: column;
+      }
 
-  <style>
-    :root {
-      --bg: #070b0a;
+      button {
+        width: 100%;
+      }
+
+      .viewer {
+        height: 72dvh;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="app">
+  <div class="header">
+    <div>
+      <div class="brand">
+        <div class="dot"></div>
+        <h1>Screen Stream</h1>
+      </div>
+      <div class="subtitle">Binary video + audio optimized for low latency</div>
+    </div>
+
+    <button class="secondary" onclick="fullscreenViewer()">Fullscreen</button>
+  </div>
+
+  <div class="panel">
+    <div id="status" class="status">Loading...</div>
+    <div id="error" class="error"></div>
+
+    <div id="setupBox" class="panel" style="display:none;">
+      <p>Paste Cloudflare tunnel URL:</p>
+
+      <input
+        id="serverInput"
+        placeholder="https://xxxxx.trycloudflare.com OR wss://xxxxx.trycloudflare.com"
+      >
+
+      <div class="controls">
+        <button onclick="openAsTablet()">Open as Tablet</button>
+        <button class="secondary" onclick="openAsClient()">Open as Client</button>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="startTabletBtn" style="display:none;">Start Tablet Screen</button>
+      <button id="stopTabletBtn" class="danger" style="display:none;">Stop Stream</button>
+      <button id="fullscreenBtn" class="secondary" style="display:none;" onclick="fullscreenViewer()">Fullscreen</button>
+      <button id="audioBtn" class="secondary" style="display:none;" onclick="enableAudio()">Enable Audio</button>
+    </div>
+
+    <div id="qrWrap">
+      <h3>Client QR</h3>
+      <div id="qrBox">
