@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Tunnel Tablet Screen Streamv2</title>
+  <title>Tunnel Tablet Screen Stream</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
@@ -60,7 +60,7 @@
       margin-top: 15px;
     }
 
-    canvas {
+    #captureCanvas {
       display: none;
     }
   </style>
@@ -122,17 +122,17 @@ const qrCanvas = document.getElementById("qr");
 
 const localVideo = document.getElementById("localVideo");
 const remoteImage = document.getElementById("remoteImage");
+
 const captureCanvas = document.getElementById("captureCanvas");
 const captureCtx = captureCanvas.getContext("2d");
 
 let ws = null;
 let localStream = null;
 let frameTimer = null;
-let lastImageUrl = null;
 
-const FPS = 8;
-const JPEG_QUALITY = 0.65;
-const MAX_WIDTH = 1280;
+const FPS = 5;
+const JPEG_QUALITY = 0.55;
+const MAX_WIDTH = 960;
 
 function setStatus(text) {
   statusBox.innerText = text;
@@ -214,7 +214,6 @@ function connectWebSocket() {
   setStatus("Connecting to tunnel:\n" + serverUrl);
 
   ws = new WebSocket(serverUrl);
-  ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
     clearError();
@@ -237,37 +236,38 @@ function connectWebSocket() {
   };
 
   ws.onmessage = (event) => {
-    if (typeof event.data === "string") {
-      const msg = JSON.parse(event.data);
+    const msg = JSON.parse(event.data);
 
-      if (msg.type === "joined") {
-        if (role === "tablet") {
-          initTabletUi();
-        }
-
-        if (role === "client") {
-          setStatus("Client connected. Waiting for frames...");
-        }
+    if (msg.type === "joined") {
+      if (role === "tablet") {
+        initTabletUi();
       }
 
-      if (msg.type === "stream-start") {
-        if (role === "client") {
-          remoteImage.style.display = "block";
-          setStatus("Receiving tablet screen through Cloudflare tunnel...");
-        }
+      if (role === "client") {
+        setStatus("Client connected. Waiting for stream...");
       }
-
-      if (msg.type === "stream-stop") {
-        if (role === "client") {
-          stopClientViewer();
-        }
-      }
-
-      return;
     }
 
-    if (role === "client") {
-      showFrame(event.data);
+    if (msg.type === "stream-start") {
+      if (role === "client") {
+        remoteImage.style.display = "block";
+        setStatus("Receiving tablet screen through Cloudflare tunnel...");
+      }
+    }
+
+    if (msg.type === "frame") {
+      if (role === "client") {
+        remoteImage.src = msg.dataUrl;
+        remoteImage.style.display = "block";
+      }
+    }
+
+    if (msg.type === "stream-stop") {
+      if (role === "client") {
+        remoteImage.removeAttribute("src");
+        remoteImage.style.display = "none";
+        setStatus("Stream stopped");
+      }
     }
   };
 }
@@ -316,8 +316,7 @@ async function startTabletScreen() {
     await localVideo.play();
 
     sendJson({
-      type: "stream-start",
-      mimeType: "image/jpeg"
+      type: "stream-start"
     });
 
     startTabletBtn.style.display = "none";
@@ -355,12 +354,12 @@ function sendFrame() {
 
   captureCtx.drawImage(localVideo, 0, 0, width, height);
 
-  captureCanvas.toBlob(async (blob) => {
-    if (!blob || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const dataUrl = captureCanvas.toDataURL("image/jpeg", JPEG_QUALITY);
 
-    const buffer = await blob.arrayBuffer();
-    ws.send(buffer);
-  }, "image/jpeg", JPEG_QUALITY);
+  sendJson({
+    type: "frame",
+    dataUrl: dataUrl
+  });
 }
 
 function stopTabletStream() {
@@ -381,34 +380,6 @@ function stopTabletStream() {
 
   startTabletBtn.style.display = "inline-block";
   stopTabletBtn.style.display = "none";
-
-  setStatus("Stream stopped");
-}
-
-function showFrame(arrayBuffer) {
-  const blob = new Blob([arrayBuffer], { type: "image/jpeg" });
-  const url = URL.createObjectURL(blob);
-
-  remoteImage.onload = () => {
-    if (lastImageUrl) {
-      URL.revokeObjectURL(lastImageUrl);
-    }
-
-    lastImageUrl = url;
-  };
-
-  remoteImage.src = url;
-  remoteImage.style.display = "block";
-}
-
-function stopClientViewer() {
-  if (lastImageUrl) {
-    URL.revokeObjectURL(lastImageUrl);
-    lastImageUrl = null;
-  }
-
-  remoteImage.removeAttribute("src");
-  remoteImage.style.display = "none";
 
   setStatus("Stream stopped");
 }
