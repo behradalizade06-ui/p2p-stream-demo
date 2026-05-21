@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Tunnel Tablet Screen Stream</title>
+  <title>WebRTC Screen Stream</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
   <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
@@ -177,19 +177,14 @@
       position: relative;
     }
 
-    video,
-    canvas {
+    video {
       width: 100%;
       height: auto;
       max-height: 78dvh;
       background: #000;
       display: block;
       object-fit: contain;
-    }
-
-    #remoteCanvas {
       transform-origin: center center;
-      transition: transform 0.2s ease;
     }
 
     #qrWrap {
@@ -202,10 +197,6 @@
       padding: 16px;
       border-radius: 22px;
       background: white;
-    }
-
-    #captureCanvas {
-      display: none;
     }
 
     .viewer-toolbar {
@@ -240,7 +231,6 @@
       display: flex !important;
     }
 
-    .viewer:fullscreen canvas,
     .viewer:fullscreen video {
       width: 100vw;
       height: 100dvh;
@@ -262,7 +252,6 @@
       display: flex !important;
     }
 
-    .viewer.fullscreen-fallback canvas,
     .viewer.fullscreen-fallback video {
       width: 100vw;
       height: 100dvh;
@@ -297,8 +286,7 @@
         min-height: 60dvh;
       }
 
-      video,
-      canvas {
+      video {
         max-height: 72dvh;
       }
     }
@@ -314,7 +302,7 @@
         <div class="dot"></div>
         <h1>Screen Stream</h1>
       </div>
-      <div class="subtitle">Tunnel viewer · dark minimal interface</div>
+      <div class="subtitle">WebRTC stream · tunnel signaling · internet clients</div>
     </div>
 
     <button class="secondary" onclick="enterViewerFullscreen()">Fullscreen</button>
@@ -358,10 +346,8 @@
     </div>
 
     <div id="remoteViewer" class="viewer">
-      <canvas id="remoteCanvas"></canvas>
+      <video id="remoteVideo" autoplay playsinline controls></video>
     </div>
-
-    <canvas id="captureCanvas"></canvas>
   </div>
 </div>
 
@@ -398,31 +384,42 @@ const remoteViewer = document.getElementById("remoteViewer");
 const viewerToolbar = document.getElementById("viewerToolbar");
 
 const localVideo = document.getElementById("localVideo");
-const remoteCanvas = document.getElementById("remoteCanvas");
-const remoteCtx = remoteCanvas.getContext("2d");
-
-const captureCanvas = document.getElementById("captureCanvas");
-const captureCtx = captureCanvas.getContext("2d");
+const remoteVideo = document.getElementById("remoteVideo");
 
 let ws = null;
 let localStream = null;
-let frameLoopActive = false;
-
+let peers = {};
+let pendingClients = new Set();
 let rotated = false;
-let fallbackFullscreen = false;
 
-let audioContext = null;
-let audioSource = null;
-let audioProcessor = null;
-let audioQueueTime = 0;
-let audioEnabled = false;
-
-const FPS = 12;
-const JPEG_QUALITY = 0.58;
-const MAX_WIDTH = 960;
-
-let lastFrameTime = 0;
-let frameInterval = 1000 / FPS;
+const rtcConfig = {
+  iceTransportPolicy: "relay",
+  iceServers: [
+    {
+      urls: "stun:stun.l.google.com:19302"
+    },
+    {
+      urls: "turn:openrelay.metered.ca:80",
+      username: "openrelayproject",
+      credential: "openrelayproject"
+    },
+    {
+      urls: "turn:openrelay.metered.ca:80?transport=tcp",
+      username: "openrelayproject",
+      credential: "openrelayproject"
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443",
+      username: "openrelayproject",
+      credential: "openrelayproject"
+    },
+    {
+      urls: "turn:openrelay.metered.ca:443?transport=tcp",
+      username: "openrelayproject",
+      credential: "openrelayproject"
+    }
+  ]
+};
 
 function setStatus(text) {
   statusBox.innerText = text;
@@ -437,10 +434,6 @@ function setError(text) {
 
   errorBox.style.display = "block";
   errorBox.innerText = text;
-}
-
-function clearError() {
-  setError("");
 }
 
 function normalizeServerUrl(url) {
@@ -493,7 +486,7 @@ function openAsClient() {
   if (url) window.location.href = url;
 }
 
-function sendJson(data) {
+function send(data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(data));
   }
@@ -506,13 +499,8 @@ async function enterViewerFullscreen() {
   viewerToolbar.style.display = "flex";
 
   try {
-    if (viewer.requestFullscreen) {
-      await viewer.requestFullscreen();
-    } else {
-      throw new Error("Fullscreen API unavailable");
-    }
-  } catch (err) {
-    fallbackFullscreen = true;
+    await viewer.requestFullscreen();
+  } catch {
     viewer.classList.add("fullscreen-fallback");
   }
 
@@ -520,7 +508,7 @@ async function enterViewerFullscreen() {
     if (screen.orientation && screen.orientation.lock) {
       await screen.orientation.lock("portrait");
     }
-  } catch (e) {}
+  } catch {}
 }
 
 async function exitViewerFullscreen() {
@@ -532,7 +520,6 @@ async function exitViewerFullscreen() {
 
   localViewer.classList.remove("fullscreen-fallback");
   remoteViewer.classList.remove("fullscreen-fallback");
-  fallbackFullscreen = false;
 }
 
 document.addEventListener("fullscreenchange", () => {
@@ -540,7 +527,6 @@ document.addEventListener("fullscreenchange", () => {
     viewerToolbar.style.display = "none";
     localViewer.classList.remove("fullscreen-fallback");
     remoteViewer.classList.remove("fullscreen-fallback");
-    fallbackFullscreen = false;
   } else {
     viewerToolbar.style.display = "flex";
   }
@@ -550,28 +536,18 @@ function toggleRotate() {
   rotated = !rotated;
 
   if (rotated) {
-    remoteCanvas.classList.add("rotated");
     localVideo.classList.add("rotated");
+    remoteVideo.classList.add("rotated");
   } else {
-    remoteCanvas.classList.remove("rotated");
     localVideo.classList.remove("rotated");
+    remoteVideo.classList.remove("rotated");
   }
 }
 
 async function enableAudio() {
   try {
-    audioEnabled = true;
-
-    if (!audioContext) {
-      audioContext = new (window.AudioContext || window.webkitAudioContext)();
-    }
-
-    if (audioContext.state === "suspended") {
-      await audioContext.resume();
-    }
-
-    audioQueueTime = audioContext.currentTime + 0.15;
-
+    remoteVideo.muted = false;
+    await remoteVideo.play();
     setStatus("Audio enabled");
   } catch (err) {
     setError("Audio enable failed:\n" + (err.message || err.name || err));
@@ -587,31 +563,29 @@ function connectWebSocket() {
 
   serverUrl = normalizeServerUrl(serverUrl);
 
-  setStatus("Connecting to tunnel:\n" + serverUrl);
+  setStatus("Connecting to signaling tunnel:\n" + serverUrl);
 
   ws = new WebSocket(serverUrl);
 
   ws.onopen = () => {
-    clearError();
-
-    sendJson({
+    send({
       type: "join",
-      role: role,
-      room: room
+      role,
+      room
     });
 
-    setStatus("Connected to tunnel server");
+    setStatus("Connected to signaling tunnel");
   };
 
   ws.onerror = () => {
-    setError("WebSocket error. Check tunnel and server.");
+    setError("WebSocket signaling error");
   };
 
   ws.onclose = () => {
-    setStatus("Disconnected from tunnel server");
+    setStatus("Disconnected from signaling tunnel");
   };
 
-  ws.onmessage = (event) => {
+  ws.onmessage = async (event) => {
     const msg = JSON.parse(event.data);
 
     if (msg.type === "joined") {
@@ -620,41 +594,65 @@ function connectWebSocket() {
       }
 
       if (role === "client") {
-        setStatus("Client connected. Waiting for stream...");
-        fullscreenBtn.style.display = "inline-block";
-        rotateBtn.style.display = "inline-block";
-        audioBtn.style.display = "inline-block";
+        initClientUi();
       }
     }
 
-    if (msg.type === "stream-start") {
+    if (msg.type === "client-joined") {
+      if (role === "tablet") {
+        if (localStream) {
+          await createOfferForClient(msg.clientId);
+        } else {
+          pendingClients.add(msg.clientId);
+          setStatus("Client waiting. Start tablet screen.");
+        }
+      }
+    }
+
+    if (msg.type === "offer") {
       if (role === "client") {
-        remoteViewer.style.display = "flex";
-        fullscreenBtn.style.display = "inline-block";
-        rotateBtn.style.display = "inline-block";
-        audioBtn.style.display = "inline-block";
-        setStatus(msg.audio ? "Receiving video + audio through tunnel..." : "Receiving video through tunnel...");
+        await receiveOffer(msg.offer);
       }
     }
 
-    if (msg.type === "frame") {
+    if (msg.type === "answer") {
+      if (role === "tablet") {
+        const pc = peers[msg.clientId];
+
+        if (pc) {
+          await pc.setRemoteDescription(msg.answer);
+        }
+      }
+    }
+
+    if (msg.type === "ice") {
+      if (role === "tablet") {
+        const pc = peers[msg.clientId];
+
+        if (pc && msg.candidate) {
+          await pc.addIceCandidate(msg.candidate);
+        }
+      }
+
       if (role === "client") {
-        drawRemoteFrame(msg.dataUrl);
-        remoteViewer.style.display = "flex";
+        const pc = peers.main;
+
+        if (pc && msg.candidate) {
+          await pc.addIceCandidate(msg.candidate);
+        }
       }
     }
 
-    if (msg.type === "audio") {
-      if (role === "client" && audioEnabled) {
-        playAudioSamples(msg.samples, msg.sampleRate);
-      }
-    }
+    if (msg.type === "client-left") {
+      if (role === "tablet") {
+        pendingClients.delete(msg.clientId);
 
-    if (msg.type === "stream-stop") {
-      if (role === "client") {
-        clearRemoteCanvas();
-        remoteViewer.style.display = "none";
-        setStatus("Stream stopped");
+        const pc = peers[msg.clientId];
+
+        if (pc) {
+          pc.close();
+          delete peers[msg.clientId];
+        }
       }
     }
   };
@@ -681,20 +679,21 @@ function initTabletUi() {
   QRCode.toCanvas(qrCanvas, clientUrl);
 }
 
+function initClientUi() {
+  setStatus("Client connected. Waiting for tablet stream...");
+
+  fullscreenBtn.style.display = "inline-block";
+  rotateBtn.style.display = "inline-block";
+  audioBtn.style.display = "inline-block";
+}
+
 async function startTabletScreen() {
-  clearError();
-
   try {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-      setError("Screen sharing not supported on this device/browser.");
-      return;
-    }
-
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: {
-        frameRate: FPS,
-        width: { ideal: 1280 },
-        height: { ideal: 720 }
+        frameRate: 30,
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
       },
       audio: true
     });
@@ -704,17 +703,6 @@ async function startTabletScreen() {
 
     await localVideo.play();
 
-    const hasAudio = localStream.getAudioTracks().length > 0;
-
-    sendJson({
-      type: "stream-start",
-      audio: hasAudio
-    });
-
-    if (hasAudio) {
-      startAudioCapture(localStream);
-    }
-
     startTabletBtn.style.display = "none";
     stopTabletBtn.style.display = "inline-block";
 
@@ -722,154 +710,127 @@ async function startTabletScreen() {
       stopTabletStream();
     };
 
-    frameLoopActive = true;
-    requestAnimationFrame(frameLoop);
+    for (const clientId of pendingClients) {
+      await createOfferForClient(clientId);
+    }
 
-    setStatus(hasAudio ? "Streaming video + audio through tunnel" : "Streaming video through tunnel");
+    pendingClients.clear();
+
+    setStatus("Streaming real WebRTC video/audio");
 
   } catch (err) {
-    console.error(err);
     setError("Screen share failed:\n" + (err.message || err.name || err));
   }
 }
 
-function frameLoop(timestamp) {
-  if (!frameLoopActive) return;
-
-  if (timestamp - lastFrameTime >= frameInterval) {
-    lastFrameTime = timestamp;
-    sendFrame();
+async function createOfferForClient(clientId) {
+  if (!localStream) {
+    pendingClients.add(clientId);
+    return;
   }
 
-  requestAnimationFrame(frameLoop);
-}
-
-function sendFrame() {
-  if (!localVideo.videoWidth || !localVideo.videoHeight) return;
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-  let width = localVideo.videoWidth;
-  let height = localVideo.videoHeight;
-
-  if (width > MAX_WIDTH) {
-    const scale = MAX_WIDTH / width;
-    width = MAX_WIDTH;
-    height = Math.round(height * scale);
+  if (peers[clientId]) {
+    peers[clientId].close();
+    delete peers[clientId];
   }
 
-  captureCanvas.width = width;
-  captureCanvas.height = height;
+  const pc = new RTCPeerConnection(rtcConfig);
+  peers[clientId] = pc;
 
-  captureCtx.drawImage(localVideo, 0, 0, width, height);
+  localStream.getTracks().forEach(track => {
+    pc.addTrack(track, localStream);
+  });
 
-  const dataUrl = captureCanvas.toDataURL("image/jpeg", JPEG_QUALITY);
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      send({
+        type: "ice",
+        clientId,
+        candidate: event.candidate
+      });
+    }
+  };
 
-  sendJson({
-    type: "frame",
-    dataUrl: dataUrl
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === "connected") {
+      setStatus("Streaming to client: " + clientId);
+    }
+
+    if (pc.connectionState === "failed") {
+      setError("WebRTC failed for client. TURN may be blocked or overloaded.");
+    }
+  };
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+
+  send({
+    type: "offer",
+    clientId,
+    offer
   });
 }
 
-function drawRemoteFrame(dataUrl) {
-  const img = new Image();
+async function receiveOffer(offer) {
+  if (peers.main) {
+    peers.main.close();
+  }
 
-  img.onload = () => {
-    if (remoteCanvas.width !== img.naturalWidth || remoteCanvas.height !== img.naturalHeight) {
-      remoteCanvas.width = img.naturalWidth;
-      remoteCanvas.height = img.naturalHeight;
-    }
+  const pc = new RTCPeerConnection(rtcConfig);
+  peers.main = pc;
 
-    remoteCtx.drawImage(img, 0, 0, remoteCanvas.width, remoteCanvas.height);
+  pc.ontrack = async (event) => {
+    remoteVideo.srcObject = event.streams[0];
+    remoteViewer.style.display = "flex";
+
+    try {
+      await remoteVideo.play();
+    } catch {}
+
+    setStatus("Receiving real WebRTC stream");
   };
 
-  img.src = dataUrl;
-}
-
-function clearRemoteCanvas() {
-  remoteCtx.clearRect(0, 0, remoteCanvas.width, remoteCanvas.height);
-}
-
-function startAudioCapture(stream) {
-  try {
-    const audioTracks = stream.getAudioTracks();
-
-    if (!audioTracks.length) return;
-
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    audioSource = ctx.createMediaStreamSource(new MediaStream(audioTracks));
-
-    audioProcessor = ctx.createScriptProcessor(2048, 1, 1);
-
-    audioProcessor.onaudioprocess = (event) => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-      const input = event.inputBuffer.getChannelData(0);
-      const samples = new Array(input.length);
-
-      for (let i = 0; i < input.length; i++) {
-        samples[i] = Math.max(-1, Math.min(1, input[i]));
-      }
-
-      sendJson({
-        type: "audio",
-        sampleRate: ctx.sampleRate,
-        samples: samples
+  pc.onicecandidate = (event) => {
+    if (event.candidate) {
+      send({
+        type: "ice",
+        candidate: event.candidate
       });
-    };
+    }
+  };
 
-    audioSource.connect(audioProcessor);
-    audioProcessor.connect(ctx.destination);
-  } catch (err) {
-    console.error("Audio capture error:", err);
-  }
-}
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === "connected") {
+      setStatus("WebRTC stream connected");
+    }
 
-function playAudioSamples(samples, sampleRate) {
-  if (!audioContext || !audioEnabled) return;
+    if (pc.connectionState === "failed") {
+      setError("WebRTC failed. TURN relay may be blocked.");
+    }
+  };
 
-  const buffer = audioContext.createBuffer(1, samples.length, sampleRate);
-  const channel = buffer.getChannelData(0);
+  await pc.setRemoteDescription(offer);
 
-  for (let i = 0; i < samples.length; i++) {
-    channel[i] = samples[i];
-  }
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
 
-  const source = audioContext.createBufferSource();
-  source.buffer = buffer;
-  source.connect(audioContext.destination);
-
-  const now = audioContext.currentTime;
-
-  if (audioQueueTime < now) {
-    audioQueueTime = now + 0.08;
-  }
-
-  source.start(audioQueueTime);
-  audioQueueTime += buffer.duration;
+  send({
+    type: "answer",
+    answer
+  });
 }
 
 function stopTabletStream() {
-  frameLoopActive = false;
-
-  if (audioProcessor) {
-    audioProcessor.disconnect();
-    audioProcessor = null;
-  }
-
-  if (audioSource) {
-    audioSource.disconnect();
-    audioSource = null;
-  }
+  Object.keys(peers).forEach(id => {
+    peers[id].close();
+    delete peers[id];
+  });
 
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
   }
 
   localStream = null;
-
-  sendJson({
-    type: "stream-stop"
-  });
 
   startTabletBtn.style.display = "inline-block";
   stopTabletBtn.style.display = "none";
