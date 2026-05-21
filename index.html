@@ -359,9 +359,9 @@ let frameCount = 0;
 let lastImage = null;
 let lastFrameTime = 0;
 
-const FPS = 12;
-const QUALITY = 0.55;
-const MAX_WIDTH = 960;
+const FPS = 16;
+const QUALITY = 0.42;
+const MAX_WIDTH = 854;
 const MIME_TYPE = "image/jpeg";
 const FRAME_INTERVAL = 1000 / FPS;
 
@@ -573,7 +573,7 @@ async function startTabletScreen() {
 function frameLoop(timestamp) {
   if (!streaming) return;
 
-  if (timestamp - lastFrameTime >= FRAME_INTERVAL) {
+  if (!lastFrameTime || timestamp - lastFrameTime >= FRAME_INTERVAL) {
     lastFrameTime = timestamp;
     sendFrame();
   }
@@ -585,7 +585,7 @@ function sendFrame() {
   if (encoding) return;
   if (!hiddenVideo.videoWidth || !hiddenVideo.videoHeight) return;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  if (ws.bufferedAmount > 3 * 1024 * 1024) return;
+  if (ws.bufferedAmount > 700 * 1024) return;
 
   encoding = true;
 
