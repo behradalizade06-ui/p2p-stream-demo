@@ -2,104 +2,395 @@
 <html>
 <head>
   <title>Tunnel Tablet Screen Stream</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
   <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
 
   <style>
+    :root {
+      --bg: #070b0a;
+      --panel: #101715;
+      --panel-2: #16211e;
+      --green: #00b050;
+      --green-soft: #19d36f;
+      --green-dark: #00853e;
+      --text: #ffffff;
+      --muted: #a8b8b2;
+      --danger: #ff5c5c;
+      --border: rgba(255, 255, 255, 0.09);
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+      --radius: 22px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
     body {
-      font-family: Arial, sans-serif;
-      padding: 20px;
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top left, rgba(0, 176, 80, 0.18), transparent 35%),
+        radial-gradient(circle at bottom right, rgba(0, 176, 80, 0.10), transparent 40%),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, Arial, Helvetica, sans-serif;
+      overflow-x: hidden;
+    }
+
+    body {
+      padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    }
+
+    .app {
+      width: 100%;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 22px;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-dot {
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 22px rgba(0, 176, 80, 0.85);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(24px, 5vw, 42px);
+      line-height: 1.05;
+      letter-spacing: -0.04em;
+    }
+
+    .subtitle {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+
+    .panel {
+      background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015));
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 18px;
+      backdrop-filter: blur(14px);
+    }
+
+    .status {
+      margin: 16px 0;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(0, 176, 80, 0.10);
+      border: 1px solid rgba(0, 176, 80, 0.22);
+      color: var(--green-soft);
+      font-weight: 700;
+      white-space: pre-wrap;
+    }
+
+    .error {
+      margin: 16px 0;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(255, 92, 92, 0.10);
+      border: 1px solid rgba(255, 92, 92, 0.22);
+      color: var(--danger);
+      font-weight: 700;
+      white-space: pre-wrap;
+      display: none;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 14px 0;
     }
 
     button {
-      padding: 10px 16px;
-      margin: 6px;
-      font-size: 16px;
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 13px 18px;
+      font-size: 15px;
+      font-weight: 800;
+      color: var(--text);
+      background: linear-gradient(135deg, var(--green), var(--green-dark));
+      box-shadow: 0 12px 28px rgba(0, 176, 80, 0.28);
       cursor: pointer;
+      transition: transform 0.18s ease, opacity 0.18s ease, box-shadow 0.18s ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 16px 36px rgba(0, 176, 80, 0.36);
+    }
+
+    button:active {
+      transform: translateY(0);
+      opacity: 0.88;
+    }
+
+    button.secondary {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      border: 1px solid var(--border);
+      box-shadow: none;
+    }
+
+    button.danger {
+      background: linear-gradient(135deg, #ff5c5c, #b51f1f);
+      box-shadow: 0 12px 28px rgba(255, 92, 92, 0.20);
     }
 
     input {
-      width: 95%;
-      max-width: 700px;
-      padding: 10px;
-      margin: 6px 0;
-      font-size: 14px;
-    }
-
-    video, img {
       width: 100%;
-      max-width: 900px;
-      background: black;
-      margin-top: 15px;
-      border: 1px solid #ccc;
+      padding: 15px 16px;
+      margin: 8px 0 12px;
+      font-size: 15px;
+      color: var(--text);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      outline: none;
     }
 
-    #status {
-      margin-top: 15px;
-      font-weight: bold;
-      color: #0a5;
-      white-space: pre-wrap;
+    input:focus {
+      border-color: rgba(0, 176, 80, 0.75);
+      box-shadow: 0 0 0 4px rgba(0, 176, 80, 0.14);
     }
 
-    #error {
-      margin-top: 15px;
-      font-weight: bold;
-      color: red;
-      white-space: pre-wrap;
+    label,
+    p {
+      color: var(--muted);
+      margin: 0 0 8px;
     }
 
-    .box {
-      border: 1px solid #ccc;
-      padding: 15px;
-      margin-top: 15px;
-      border-radius: 8px;
+    .viewer {
+      margin-top: 16px;
+      background: #000;
+      border-radius: 24px;
+      overflow: hidden;
+      border: 1px solid rgba(255,255,255,0.10);
+      box-shadow: var(--shadow);
+      min-height: 180px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+
+    video,
+    img {
+      width: 100%;
+      height: auto;
+      max-height: 78vh;
+      display: block;
+      background: #000;
+      object-fit: contain;
+    }
+
+    #remoteImage {
+      image-rendering: auto;
+    }
+
+    #qrWrap {
+      margin-top: 16px;
+      display: none;
+    }
+
+    #qrBox {
+      display: inline-block;
+      padding: 16px;
+      border-radius: 22px;
+      background: #fff;
     }
 
     #qr {
-      margin-top: 15px;
+      display: block;
     }
 
     #captureCanvas {
       display: none;
+    }
+
+    .setup-title {
+      font-size: 20px;
+      font-weight: 900;
+      margin-bottom: 10px;
+    }
+
+    .small {
+      font-size: 13px;
+      color: var(--muted);
+      margin-top: 10px;
+    }
+
+    .fullscreen-mode {
+      width: 100vw;
+      min-height: 100vh;
+      max-width: none;
+      padding: 12px;
+      background: #000;
+    }
+
+    .fullscreen-mode .header,
+    .fullscreen-mode #setupBox,
+    .fullscreen-mode #qrWrap,
+    .fullscreen-mode .controls.tablet-only {
+      display: none !important;
+    }
+
+    .fullscreen-mode .panel {
+      background: #000;
+      border: 0;
+      box-shadow: none;
+      padding: 0;
+    }
+
+    .fullscreen-mode .status,
+    .fullscreen-mode .error {
+      margin: 8px;
+    }
+
+    .fullscreen-mode .viewer {
+      display: flex !important;
+      height: calc(100vh - 90px);
+      margin: 0;
+      border-radius: 0;
+      border: 0;
+      box-shadow: none;
+    }
+
+    .fullscreen-mode img,
+    .fullscreen-mode video {
+      width: 100%;
+      height: 100%;
+      max-height: none;
+      object-fit: contain;
+    }
+
+    @media (orientation: portrait) {
+      .app {
+        padding: 18px;
+      }
+
+      .header {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .controls {
+        flex-direction: column;
+      }
+
+      button {
+        width: 100%;
+      }
+
+      .viewer {
+        border-radius: 20px;
+      }
+
+      video,
+      img {
+        max-height: 70vh;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .app {
+        padding: 16px;
+      }
+
+      .panel {
+        padding: 14px;
+        border-radius: 20px;
+      }
+
+      .status,
+      .error {
+        font-size: 14px;
+      }
     }
   </style>
 </head>
 
 <body>
 
-<h2>Tunnel Tablet Screen Stream</h2>
+<div id="app" class="app">
+  <div class="header">
+    <div>
+      <div class="brand">
+        <div class="logo-dot"></div>
+        <h1>Screen Stream</h1>
+      </div>
+      <div class="subtitle">Secure tunnel viewer · dark minimal interface</div>
+    </div>
 
-<div id="status">Loading...</div>
-<div id="error"></div>
+    <button class="secondary" onclick="toggleFullscreen()">Fullscreen</button>
+  </div>
 
-<div id="setupBox" class="box" style="display:none;">
-  <h3>Setup</h3>
+  <div class="panel">
+    <div id="status" class="status">Loading...</div>
+    <div id="error" class="error"></div>
 
-  <p>Paste Cloudflare tunnel URL:</p>
+    <div id="setupBox" class="panel" style="display:none;">
+      <div class="setup-title">Setup</div>
+      <p>Paste Cloudflare tunnel URL:</p>
 
-  <input
-    id="serverInput"
-    placeholder="https://xxxxx.trycloudflare.com OR wss://xxxxx.trycloudflare.com"
-  >
+      <input
+        id="serverInput"
+        placeholder="https://xxxxx.trycloudflare.com OR wss://xxxxx.trycloudflare.com"
+      >
 
-  <br>
+      <div class="controls">
+        <button onclick="openAsTablet()">Open as Tablet</button>
+        <button class="secondary" onclick="openAsClient()">Open as Client</button>
+      </div>
 
-  <button onclick="openAsTablet()">Open as Tablet</button>
-  <button onclick="openAsClient()">Open as Client</button>
+      <div class="small">Use the generated tablet URL from the terminal for the cleanest flow.</div>
+    </div>
+
+    <div class="controls tablet-only">
+      <button id="startTabletBtn" style="display:none;">Start Tablet Screen</button>
+      <button id="stopTabletBtn" class="danger" style="display:none;">Stop Stream</button>
+    </div>
+
+    <div id="qrWrap">
+      <h3>Client QR</h3>
+      <div id="qrBox">
+        <canvas id="qr"></canvas>
+      </div>
+    </div>
+
+    <div id="localViewer" class="viewer">
+      <video id="localVideo" autoplay muted playsinline></video>
+    </div>
+
+    <div id="remoteViewer" class="viewer">
+      <img id="remoteImage" alt="Remote tablet screen">
+    </div>
+
+    <canvas id="captureCanvas"></canvas>
+  </div>
 </div>
-
-<button id="startTabletBtn" style="display:none;">Start Tablet Screen</button>
-<button id="stopTabletBtn" style="display:none;">Stop Stream</button>
-
-<h3 id="qrTitle" style="display:none;">Client QR</h3>
-<canvas id="qr" style="display:none;"></canvas>
-
-<video id="localVideo" autoplay muted playsinline style="display:none;"></video>
-
-<img id="remoteImage" style="display:none;" alt="Remote tablet screen">
-
-<canvas id="captureCanvas"></canvas>
 
 <script>
 const params = new URLSearchParams(window.location.search);
@@ -107,6 +398,8 @@ const params = new URLSearchParams(window.location.search);
 const role = params.get("role");
 const room = params.get("room") || "demo";
 let serverUrl = params.get("server");
+
+const app = document.getElementById("app");
 
 const setupBox = document.getElementById("setupBox");
 const serverInput = document.getElementById("serverInput");
@@ -117,8 +410,11 @@ const errorBox = document.getElementById("error");
 const startTabletBtn = document.getElementById("startTabletBtn");
 const stopTabletBtn = document.getElementById("stopTabletBtn");
 
-const qrTitle = document.getElementById("qrTitle");
+const qrWrap = document.getElementById("qrWrap");
 const qrCanvas = document.getElementById("qr");
+
+const localViewer = document.getElementById("localViewer");
+const remoteViewer = document.getElementById("remoteViewer");
 
 const localVideo = document.getElementById("localVideo");
 const remoteImage = document.getElementById("remoteImage");
@@ -139,11 +435,18 @@ function setStatus(text) {
 }
 
 function setError(text) {
+  if (!text) {
+    errorBox.style.display = "none";
+    errorBox.innerText = "";
+    return;
+  }
+
+  errorBox.style.display = "block";
   errorBox.innerText = text;
 }
 
 function clearError() {
-  errorBox.innerText = "";
+  setError("");
 }
 
 function normalizeServerUrl(url) {
@@ -196,6 +499,42 @@ function openAsClient() {
   if (url) window.location.href = url;
 }
 
+async function toggleFullscreen() {
+  try {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen();
+
+      app.classList.add("fullscreen-mode");
+
+      if (screen.orientation && screen.orientation.lock) {
+        try {
+          await screen.orientation.lock("portrait");
+        } catch (e) {
+          console.log("Portrait lock not available:", e);
+        }
+      }
+    } else {
+      await document.exitFullscreen();
+    }
+  } catch (err) {
+    console.log("Fullscreen error:", err);
+  }
+}
+
+document.addEventListener("fullscreenchange", () => {
+  if (document.fullscreenElement) {
+    app.classList.add("fullscreen-mode");
+  } else {
+    app.classList.remove("fullscreen-mode");
+
+    if (screen.orientation && screen.orientation.unlock) {
+      try {
+        screen.orientation.unlock();
+      } catch (e) {}
+    }
+  }
+});
+
 function sendJson(data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(data));
@@ -224,7 +563,7 @@ function connectWebSocket() {
       room: room
     });
 
-    setStatus("Connected to Cloudflare tunnel server");
+    setStatus("Connected to tunnel server");
   };
 
   ws.onerror = () => {
@@ -250,22 +589,22 @@ function connectWebSocket() {
 
     if (msg.type === "stream-start") {
       if (role === "client") {
-        remoteImage.style.display = "block";
-        setStatus("Receiving tablet screen through Cloudflare tunnel...");
+        remoteViewer.style.display = "flex";
+        setStatus("Receiving screen through tunnel...");
       }
     }
 
     if (msg.type === "frame") {
       if (role === "client") {
         remoteImage.src = msg.dataUrl;
-        remoteImage.style.display = "block";
+        remoteViewer.style.display = "flex";
       }
     }
 
     if (msg.type === "stream-stop") {
       if (role === "client") {
         remoteImage.removeAttribute("src");
-        remoteImage.style.display = "none";
+        remoteViewer.style.display = "none";
         setStatus("Stream stopped");
       }
     }
@@ -286,8 +625,7 @@ function initTabletUi() {
     "&server=" +
     encodeURIComponent(serverUrl);
 
-  qrTitle.style.display = "block";
-  qrCanvas.style.display = "block";
+  qrWrap.style.display = "block";
 
   QRCode.toCanvas(qrCanvas, clientUrl);
 }
@@ -311,7 +649,7 @@ async function startTabletScreen() {
     });
 
     localVideo.srcObject = localStream;
-    localVideo.style.display = "block";
+    localViewer.style.display = "flex";
 
     await localVideo.play();
 
@@ -328,7 +666,7 @@ async function startTabletScreen() {
 
     frameTimer = setInterval(sendFrame, 1000 / FPS);
 
-    setStatus("Streaming tablet screen THROUGH CLOUDFLARE TUNNEL");
+    setStatus("Streaming screen through tunnel");
 
   } catch (err) {
     console.error(err);
@@ -380,6 +718,7 @@ function stopTabletStream() {
 
   startTabletBtn.style.display = "inline-block";
   stopTabletBtn.style.display = "none";
+  localViewer.style.display = "none";
 
   setStatus("Stream stopped");
 }
