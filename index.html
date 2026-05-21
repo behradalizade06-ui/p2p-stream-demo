@@ -1,11 +1,10 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>PeerJS Tablet Screen Stream</title>
+  <title>Tunnel Tablet Screen Stream</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
   <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 
   <style>
     body {
@@ -64,7 +63,7 @@
 
 <body>
 
-<h2>PeerJS Tablet Screen Stream</h2>
+<h2>Tunnel Tablet Screen Stream</h2>
 
 <div id="status">Loading...</div>
 <div id="error"></div>
@@ -75,8 +74,8 @@
   <p>Paste Cloudflare tunnel URL:</p>
 
   <input
-    id="peerHostInput"
-    placeholder="https://xxxxx.trycloudflare.com"
+    id="serverInput"
+    placeholder="https://xxxxx.trycloudflare.com OR wss://xxxxx.trycloudflare.com"
   >
 
   <br>
@@ -86,6 +85,7 @@
 </div>
 
 <button id="startTabletBtn" style="display:none;">Start Tablet Screen</button>
+<button id="stopTabletBtn" style="display:none;">Stop Stream</button>
 
 <h3 id="qrTitle" style="display:none;">Client QR</h3>
 <canvas id="qr" style="display:none;"></canvas>
@@ -98,27 +98,31 @@ const params = new URLSearchParams(window.location.search);
 
 const role = params.get("role");
 const room = params.get("room") || "demo";
-const peerHostRaw = params.get("peerhost");
+let serverUrl = params.get("server");
 
 const setupBox = document.getElementById("setupBox");
-const peerHostInput = document.getElementById("peerHostInput");
+const serverInput = document.getElementById("serverInput");
+
 const statusBox = document.getElementById("status");
 const errorBox = document.getElementById("error");
 
 const startTabletBtn = document.getElementById("startTabletBtn");
+const stopTabletBtn = document.getElementById("stopTabletBtn");
+
 const qrTitle = document.getElementById("qrTitle");
 const qrCanvas = document.getElementById("qr");
 
 const localVideo = document.getElementById("localVideo");
 const remoteVideo = document.getElementById("remoteVideo");
 
-let peer = null;
+let ws = null;
 let localStream = null;
+let recorder = null;
 
-let clientIds = new Set();
-let clientConnections = {};
-
-const TABLET_ID = "tablet-" + room;
+let mediaSource = null;
+let sourceBuffer = null;
+let queue = [];
+let mediaReady = false;
 
 function setStatus(text) {
   statusBox.innerText = text;
@@ -132,24 +136,30 @@ function clearError() {
   errorBox.innerText = "";
 }
 
-function normalizePeerHost(input) {
-  if (!input) return null;
+function normalizeServerUrl(url) {
+  if (!url) return null;
 
-  let value = input.trim();
+  url = url.trim();
 
-  value = value.replace("https://", "");
-  value = value.replace("http://", "");
-  value = value.replace("wss://", "");
-  value = value.replace("ws://", "");
-  value = value.replace(/\/$/, "");
+  if (url.startsWith("https://")) {
+    return url.replace("https://", "wss://");
+  }
 
-  return value;
+  if (url.startsWith("http://")) {
+    return url.replace("http://", "ws://");
+  }
+
+  if (url.startsWith("wss://") || url.startsWith("ws://")) {
+    return url;
+  }
+
+  return "wss://" + url;
 }
 
 function buildUrl(newRole) {
-  const host = normalizePeerHost(peerHostInput.value);
+  const cleanServer = normalizeServerUrl(serverInput.value);
 
-  if (!host) {
+  if (!cleanServer) {
     alert("Insert Cloudflare tunnel URL first");
     return null;
   }
@@ -161,8 +171,8 @@ function buildUrl(newRole) {
     encodeURIComponent(newRole) +
     "&room=" +
     encodeURIComponent(room) +
-    "&peerhost=" +
-    encodeURIComponent("https://" + host)
+    "&server=" +
+    encodeURIComponent(cleanServer)
   );
 }
 
@@ -176,127 +186,99 @@ function openAsClient() {
   if (url) window.location.href = url;
 }
 
-function createPeer(peerId) {
-  const host = normalizePeerHost(peerHostRaw);
-
-  if (!host) {
-    setError("Missing PeerJS tunnel host");
-    return null;
+function sendJson(data) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(data));
   }
-
-  return new Peer(peerId, {
-    host: host,
-    port: 443,
-    path: "/peerjs",
-    secure: true,
-    key: "peerjs",
-    debug: 3,
-    pingInterval: 5000,
-    config: {
-      iceServers: [
-        {
-          urls: "stun:stun.l.google.com:19302"
-        },
-
-        // TURN over UDP 80
-        {
-          urls: "turn:openrelay.metered.ca:80",
-          username: "openrelayproject",
-          credential: "openrelayproject"
-        },
-
-        // TURN over TCP 80
-        {
-          urls: "turn:openrelay.metered.ca:80?transport=tcp",
-          username: "openrelayproject",
-          credential: "openrelayproject"
-        },
-
-        // TURN over UDP 443
-        {
-          urls: "turn:openrelay.metered.ca:443",
-          username: "openrelayproject",
-          credential: "openrelayproject"
-        },
-
-        // TURN over TCP 443
-        {
-          urls: "turn:openrelay.metered.ca:443?transport=tcp",
-          username: "openrelayproject",
-          credential: "openrelayproject"
-        }
-      ]
-    }
-  });
 }
 
+function connectWebSocket() {
+  if (!serverUrl) {
+    setupBox.style.display = "block";
+    setStatus("Insert tunnel URL and choose Tablet or Client");
+    return;
+  }
 
-function initTablet() {
-  clearError();
+  serverUrl = normalizeServerUrl(serverUrl);
 
-  peer = createPeer(TABLET_ID);
+  setStatus("Connecting to tunnel:\n" + serverUrl);
 
-  peer.on("open", (id) => {
-    setStatus("Tablet connected as: " + id + "\nPress Start Tablet Screen.");
+  ws = new WebSocket(serverUrl);
+  ws.binaryType = "arraybuffer";
 
-    startTabletBtn.style.display = "inline-block";
+  ws.onopen = () => {
+    clearError();
 
-    const clientUrl =
-      window.location.origin +
-      window.location.pathname +
-      "?role=client" +
-      "&room=" +
-      encodeURIComponent(room) +
-      "&peerhost=" +
-      encodeURIComponent(peerHostRaw);
+    sendJson({
+      type: "join",
+      role: role,
+      room: room
+    });
 
-    qrTitle.style.display = "block";
-    qrCanvas.style.display = "block";
+    setStatus("Connected to Cloudflare tunnel server");
+  };
 
-    QRCode.toCanvas(qrCanvas, clientUrl);
-  });
+  ws.onerror = () => {
+    setError("WebSocket error. Check tunnel and server.");
+  };
 
-  peer.on("connection", (conn) => {
-    clientConnections[conn.peer] = conn;
-    clientIds.add(conn.peer);
+  ws.onclose = () => {
+    setStatus("Disconnected from tunnel server");
+  };
 
-    setStatus("Client registered: " + conn.peer);
+  ws.onmessage = async (event) => {
+    if (typeof event.data === "string") {
+      const msg = JSON.parse(event.data);
 
-    conn.on("data", (data) => {
-      if (data && data.type === "client-ready") {
-        clientIds.add(conn.peer);
+      if (msg.type === "joined") {
+        if (role === "tablet") {
+          initTabletUi();
+        }
 
-        if (localStream) {
-          callClient(conn.peer);
-        } else {
-          setStatus("Client ready. Start tablet screen.");
+        if (role === "client") {
+          setStatus("Client connected. Waiting for stream...");
         }
       }
-    });
 
-    conn.on("close", () => {
-      delete clientConnections[conn.peer];
-      clientIds.delete(conn.peer);
-      setStatus("Client disconnected: " + conn.peer);
-    });
-  });
+      if (msg.type === "stream-start") {
+        if (role === "client") {
+          startClientPlayer(msg.mimeType);
+        }
+      }
 
-  peer.on("error", (err) => {
-    console.error(err);
+      if (msg.type === "stream-stop") {
+        if (role === "client") {
+          stopClientPlayer();
+        }
+      }
 
-    if (err.type === "unavailable-id") {
-      setError(
-        "Tablet ID already exists.\n" +
-        "Close the old tablet page or restart PeerJS server."
-      );
-    } else {
-      setError("PeerJS tablet error:\n" + err.message);
+      return;
     }
-  });
 
-  peer.on("disconnected", () => {
-    setStatus("Tablet disconnected from PeerJS server");
-  });
+    if (role === "client") {
+      appendVideoChunk(event.data);
+    }
+  };
+}
+
+function initTabletUi() {
+  setStatus("Tablet connected. Press Start Tablet Screen.");
+
+  startTabletBtn.style.display = "inline-block";
+
+  const clientUrl =
+    window.location.origin +
+    window.location.pathname +
+    "?role=client" +
+    "&room=" +
+    encodeURIComponent(room) +
+    "&server=" +
+    encodeURIComponent(serverUrl);
+
+  qrTitle.style.display = "block";
+  qrCanvas.style.display = "block";
+
+  QRCode.toCanvas(qrCanvas, clientUrl);
 }
 
 async function startTabletScreen() {
@@ -304,16 +286,15 @@ async function startTabletScreen() {
 
   try {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-      setError(
-        "Screen sharing is not supported on this browser/device.\n" +
-        "Try Chrome/Edge desktop, or another tablet/browser that supports screen capture."
-      );
+      setError("Screen sharing not supported on this device/browser.");
       return;
     }
 
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: {
-        frameRate: 30
+        frameRate: 20,
+        width: { ideal: 1280 },
+        height: { ideal: 720 }
       },
       audio: false
     });
@@ -321,16 +302,59 @@ async function startTabletScreen() {
     localVideo.srcObject = localStream;
     localVideo.style.display = "block";
 
-    localStream.getVideoTracks()[0].onended = () => {
-      setStatus("Tablet screen sharing stopped");
-      localStream = null;
+    const mimeTypes = [
+      "video/webm;codecs=vp8",
+      "video/webm;codecs=vp9",
+      "video/webm"
+    ];
+
+    let mimeType = "";
+
+    for (const type of mimeTypes) {
+      if (MediaRecorder.isTypeSupported(type)) {
+        mimeType = type;
+        break;
+      }
+    }
+
+    if (!mimeType) {
+      setError("No supported MediaRecorder codec found.");
+      return;
+    }
+
+    sendJson({
+      type: "stream-start",
+      mimeType: mimeType
+    });
+
+    recorder = new MediaRecorder(localStream, {
+      mimeType: mimeType,
+      videoBitsPerSecond: 1200000
+    });
+
+    recorder.ondataavailable = async (event) => {
+      if (event.data && event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
+        const buffer = await event.data.arrayBuffer();
+        ws.send(buffer);
+      }
     };
 
-    setStatus("Tablet screen sharing active.\nCalling clients...");
+    recorder.onstop = () => {
+      sendJson({
+        type: "stream-stop"
+      });
+    };
 
-    for (const clientId of clientIds) {
-      callClient(clientId);
-    }
+    localStream.getVideoTracks()[0].onended = () => {
+      stopTabletStream();
+    };
+
+    recorder.start(250);
+
+    startTabletBtn.style.display = "none";
+    stopTabletBtn.style.display = "inline-block";
+
+    setStatus("Streaming tablet screen THROUGH CLOUDFLARE TUNNEL");
 
   } catch (err) {
     console.error(err);
@@ -338,106 +362,108 @@ async function startTabletScreen() {
   }
 }
 
-function callClient(clientId) {
-  if (!localStream) {
-    setStatus("No tablet screen stream yet.");
+function stopTabletStream() {
+  if (recorder && recorder.state !== "inactive") {
+    recorder.stop();
+  }
+
+  if (localStream) {
+    localStream.getTracks().forEach(track => track.stop());
+  }
+
+  recorder = null;
+  localStream = null;
+
+  startTabletBtn.style.display = "inline-block";
+  stopTabletBtn.style.display = "none";
+
+  setStatus("Stream stopped");
+}
+
+function startClientPlayer(mimeType) {
+  clearError();
+
+  queue = [];
+  sourceBuffer = null;
+  mediaReady = false;
+
+  if (!window.MediaSource) {
+    setError("MediaSource not supported on this browser.");
     return;
   }
 
-  setStatus("Calling client: " + clientId);
+  if (!MediaSource.isTypeSupported(mimeType)) {
+    setError("Client browser does not support codec:\n" + mimeType);
+    return;
+  }
 
-  const call = peer.call(clientId, localStream);
+  mediaSource = new MediaSource();
 
-  call.on("stream", () => {
-    setStatus("Streaming to client: " + clientId);
+  remoteVideo.src = URL.createObjectURL(mediaSource);
+  remoteVideo.style.display = "block";
+
+  mediaSource.addEventListener("sourceopen", () => {
+    sourceBuffer = mediaSource.addSourceBuffer(mimeType);
+    sourceBuffer.mode = "sequence";
+
+    sourceBuffer.addEventListener("updateend", processQueue);
+
+    mediaReady = true;
+    processQueue();
+
+    remoteVideo.play().catch(() => {});
   });
 
-  call.on("close", () => {
-    setStatus("Call closed with client: " + clientId);
-  });
-
-  call.on("error", (err) => {
-    console.error(err);
-    setError("Call error with client " + clientId + ":\n" + err.message);
-  });
+  setStatus("Receiving stream through Cloudflare tunnel...");
 }
 
-function initClient() {
-  clearError();
+function appendVideoChunk(chunk) {
+  if (!mediaReady || !sourceBuffer) {
+    queue.push(chunk);
+    return;
+  }
 
-  const clientId =
-    "client-" +
-    room +
-    "-" +
-    Math.random().toString(36).slice(2);
+  queue.push(chunk);
+  processQueue();
+}
 
-  peer = createPeer(clientId);
+function processQueue() {
+  if (!sourceBuffer || sourceBuffer.updating || queue.length === 0) {
+    return;
+  }
 
-  peer.on("open", (id) => {
-    setStatus("Client connected as: " + id + "\nRegistering with tablet...");
+  const chunk = queue.shift();
 
-    const conn = peer.connect(TABLET_ID);
-
-    conn.on("open", () => {
-      conn.send({
-        type: "client-ready",
-        clientId: id
-      });
-
-      setStatus("Client ready. Waiting for tablet call...");
-    });
-
-    conn.on("error", (err) => {
-      console.error(err);
-      setError("Data connection error:\n" + err.message);
-    });
-  });
-
-  peer.on("call", (call) => {
-    setStatus("Incoming tablet stream...");
-
-    call.answer();
-
-    call.on("stream", (stream) => {
-      remoteVideo.srcObject = stream;
-      remoteVideo.style.display = "block";
-      remoteVideo.play().catch(() => {});
-      setStatus("Receiving tablet screen");
-    });
-
-    call.on("close", () => {
-      setStatus("Stream closed");
-    });
-
-    call.on("error", (err) => {
-      console.error(err);
-      setError("Stream call error:\n" + err.message);
-    });
-  });
-
-  peer.on("error", (err) => {
+  try {
+    sourceBuffer.appendBuffer(chunk);
+  } catch (err) {
     console.error(err);
-    setError("PeerJS client error:\n" + err.message);
-  });
+    setError("Video buffer error:\n" + (err.message || err.name || err));
+  }
+}
 
-  peer.on("disconnected", () => {
-    setStatus("Client disconnected from PeerJS server");
-  });
+function stopClientPlayer() {
+  queue = [];
+  mediaReady = false;
+
+  if (remoteVideo.src) {
+    URL.revokeObjectURL(remoteVideo.src);
+  }
+
+  remoteVideo.removeAttribute("src");
+  remoteVideo.load();
+
+  setStatus("Stream stopped");
 }
 
 startTabletBtn.onclick = startTabletScreen;
+stopTabletBtn.onclick = stopTabletStream;
 
-if (!role || !peerHostRaw) {
+if (!role || !serverUrl) {
   setupBox.style.display = "block";
   setStatus("Insert tunnel URL and choose Tablet or Client");
 } else {
-  if (role === "tablet") {
-    initTablet();
-  } else if (role === "client") {
-    initClient();
-  } else {
-    setError("Invalid role");
-  }
+  connectWebSocket();
 }
 </script>
 
