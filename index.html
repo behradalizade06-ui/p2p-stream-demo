@@ -1,7 +1,134 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Ultra Low Lat.08);  <title>Ultra Low Latency Screen Stream</title>
+  <title>Ultra Low Latency Screen Stream</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+
+  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #070b0a;
+      --green: #00b050;
+      --green2: #19d36f;
+      --green3: #00853e;
+      --text: #ffffff;
+      --muted: #a8b8b2;
+      --danger: #ff5c5c;
+      --border: rgba(255,255,255,0.1);
+      --radius: 22px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      width: 100%;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top left, rgba(0,176,80,0.18), transparent 35%),
+        radial-gradient(circle at bottom right, rgba(0,176,80,0.10), transparent 40%),
+        var(--bg);
+      color: var(--text);
+      font-family: Arial, Helvetica, sans-serif;
+      overflow-x: hidden;
+    }
+
+    .app {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .dot {
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 22px rgba(0,176,80,0.85);
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(26px, 5vw, 42px);
+      letter-spacing: -0.04em;
+    }
+
+    .subtitle {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .panel {
+      background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015));
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px;
+      box-shadow: 0 18px 50px rgba(0,0,0,0.45);
+    }
+
+    .status {
+      margin: 12px 0;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(0,176,80,0.10);
+      border: 1px solid rgba(0,176,80,0.25);
+      color: var(--green2);
+      font-weight: 800;
+      white-space: pre-wrap;
+    }
+
+    .error {
+      margin: 12px 0;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(255,92,92,0.10);
+      border: 1px solid rgba(255,92,92,0.25);
+      color: var(--danger);
+      font-weight: 800;
+      white-space: pre-wrap;
+      display: none;
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin: 14px 0;
+    }
+
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 13px 18px;
+      font-size: 15px;
+      font-weight: 800;
+      color: white;
+      background: linear-gradient(135deg, var(--green), var(--green3));
+      box-shadow: 0 12px 28px rgba(0,176,80,0.28);
+      cursor: pointer;
+    }
+
+    button.secondary {
+      background: rgba(255,255,255,0.08);
       border: 1px solid var(--border);
       box-shadow: none;
     }
@@ -85,6 +212,17 @@
       background: white;
     }
 
+    #clientUrlBox {
+      margin-top: 12px;
+      padding: 12px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.06);
+      color: var(--muted);
+      word-break: break-all;
+      display: none;
+      font-size: 13px;
+    }
+
     @media (orientation: portrait) {
       .header {
         flex-direction: column;
@@ -150,6 +288,7 @@
       <div id="qrBox">
         <canvas id="qr"></canvas>
       </div>
+      <div id="clientUrlBox"></div>
     </div>
 
     <div id="remoteViewer" class="viewer">
@@ -180,6 +319,7 @@ const fullscreenBtn = document.getElementById("fullscreenBtn");
 
 const qrWrap = document.getElementById("qrWrap");
 const qrCanvas = document.getElementById("qr");
+const clientUrlBox = document.getElementById("clientUrlBox");
 
 const remoteViewer = document.getElementById("remoteViewer");
 const remoteCanvas = document.getElementById("remoteCanvas");
@@ -195,7 +335,6 @@ let streaming = false;
 let encoding = false;
 let seq = 0;
 let frameCount = 0;
-
 let streamTimer = null;
 
 const TYPE_VIDEO = 1;
@@ -381,9 +520,15 @@ function initTablet() {
     encodeURIComponent(serverUrl);
 
   qrWrap.style.display = "block";
+  clientUrlBox.style.display = "block";
+  clientUrlBox.innerText = clientUrl;
 
   if (window.QRCode) {
-    QRCode.toCanvas(qrCanvas, clientUrl);
+    QRCode.toCanvas(qrCanvas, clientUrl, function (err) {
+      if (err) {
+        setError("QR generation failed.\n\nClient URL:\n" + clientUrl);
+      }
+    });
   } else {
     setError("QR library not loaded.\n\nClient URL:\n" + clientUrl);
   }
@@ -432,7 +577,10 @@ async function startTabletScreen() {
       stopTabletStream();
     };
 
-    if (streamTimer) clearInterval(streamTimer);
+    if (streamTimer) {
+      clearInterval(streamTimer);
+    }
+
     streamTimer = setInterval(sendFixedRateFrame, FRAME_INTERVAL);
 
     updateTabletStatus("Started");
@@ -723,129 +871,4 @@ if (!role || !serverUrl) {
 
 </body>
 </html>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-
-  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
-
-  <style>
-    :root {
-      --bg: #070b0a;
-      --green: #00b050;
-      --green2: #19d36f;
-      --green3: #00853e;
-      --text: #ffffff;
-      --muted: #a8b8b2;
-      --danger: #ff5c5c;
-      --border: rgba(255,255,255,0.1);
-      --radius: 22px;
-    }
-
-    * {
-      box-sizing: border-box;
-    }
-
-    html,
-    body {
-      margin: 0;
-      width: 100%;
-      min-height: 100%;
-      background:
-        radial-gradient(circle at top left, rgba(0,176,80,0.18), transparent 35%),
-        radial-gradient(circle at bottom right, rgba(0,176,80,0.10), transparent 40%),
-        var(--bg);
-      color: var(--text);
-      font-family: Arial, Helvetica, sans-serif;
-      overflow-x: hidden;
-    }
-
-    .app {
-      max-width: 1100px;
-      margin: 0 auto;
-      padding: 18px;
-    }
-
-    .header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
-      margin-bottom: 16px;
-    }
-
-    .brand {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    .dot {
-      width: 18px;
-      height: 18px;
-      border-radius: 999px;
-      background: var(--green);
-      box-shadow: 0 0 22px rgba(0,176,80,0.85);
-    }
-
-    h1 {
-      margin: 0;
-      font-size: clamp(26px, 5vw, 42px);
-      letter-spacing: -0.04em;
-    }
-
-    .subtitle {
-      margin-top: 6px;
-      color: var(--muted);
-      font-size: 14px;
-    }
-
-    .panel {
-      background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.015));
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      padding: 16px;
-      box-shadow: 0 18px 50px rgba(0,0,0,0.45);
-    }
-
-    .status {
-      margin: 12px 0;
-      padding: 14px 16px;
-      border-radius: 18px;
-      background: rgba(0,176,80,0.10);
-      border: 1px solid rgba(0,176,80,0.25);
-      color: var(--green2);
-      font-weight: 800;
-      white-space: pre-wrap;
-    }
-
-    .error {
-      margin: 12px 0;
-      padding: 14px 16px;
-      border-radius: 18px;
-      background: rgba(255,92,92,0.10);
-      border: 1px solid rgba(255,92,92,0.25);
-      color: var(--danger);
-      font-weight: 800;
-      white-space: pre-wrap;
-      display: none;
-    }
-
-    .controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin: 14px 0;
-    }
-
-    button {
-      border: 0;
-      border-radius: 999px;
-      padding: 13px 18px;
-      font-size: 15px;
-      font-weight: 800;
-      color: white;
-      background: linear-gradient(135deg, var(--green), var(--green3));
-      box-shadow: 0 12px 28px rgba(0,176,80,0.28);
-      cursor: pointer;
-    }
-
-    button.secondary {
+``
