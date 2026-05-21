@@ -403,9 +403,6 @@ const rtcConfig = {
   iceTransportPolicy: "relay",
   iceServers: [
     {
-      urls: "stun:stun.l.google.com:19302"
-    },
-    {
       urls: "turn:openrelay.metered.ca:80",
       username: "openrelayproject",
       credential: "openrelayproject"
@@ -586,11 +583,11 @@ function connectWebSocket() {
   };
 
   ws.onerror = () => {
-    setError("WebSocket signaling error");
+    setError("WebSocket signaling error\n\n" + serverUrl);
   };
 
-  ws.onclose = () => {
-    setStatus("Disconnected from signaling tunnel");
+  ws.onclose = (event) => {
+    setStatus("Disconnected from signaling tunnel\nCode: " + event.code);
   };
 
   ws.onmessage = async (event) => {
@@ -638,7 +635,9 @@ function connectWebSocket() {
         const pc = peers[msg.clientId];
 
         if (pc && msg.candidate) {
-          await pc.addIceCandidate(msg.candidate);
+          try {
+            await pc.addIceCandidate(msg.candidate);
+          } catch {}
         }
       }
 
@@ -646,7 +645,9 @@ function connectWebSocket() {
         const pc = peers.main;
 
         if (pc && msg.candidate) {
-          await pc.addIceCandidate(msg.candidate);
+          try {
+            await pc.addIceCandidate(msg.candidate);
+          } catch {}
         }
       }
     }
