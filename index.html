@@ -1,13 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Low Latency Screen Stream</title>
-  <meta.net/npm/qrcode/build/qrcode.min.js"></script>  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-
-  <style>
-    :root {
-      --bg: #070b0a;
-      --green: #00b050;
+  <;  <title>Ultra Low Latency Screen Stream</title>
       --green2: #19d36f;
       --green3: #00853e;
       --text: #ffffff;
@@ -172,6 +166,10 @@
       background: #000;
     }
 
+    #audioPlayer {
+      display: none;
+    }
+
     #hiddenVideo,
     #captureCanvas {
       position: fixed;
@@ -240,7 +238,7 @@
         <div class="dot"></div>
         <h1>Screen Stream</h1>
       </div>
-      <div class="subtitle">Binary stream optimized for low latency</div>
+      <div class="subtitle">Binary video + audio optimized for low latency</div>
     </div>
 
     <button class="secondary" onclick="fullscreenViewer()">Fullscreen</button>
@@ -268,6 +266,7 @@
       <button id="startTabletBtn" style="display:none;">Start Tablet Screen</button>
       <button id="stopTabletBtn" class="danger" style="display:none;">Stop Stream</button>
       <button id="fullscreenBtn" class="secondary" style="display:none;" onclick="fullscreenViewer()">Fullscreen</button>
+      <button id="audioBtn" class="secondary" style="display:none;" onclick="enableAudio()">Enable Audio</button>
     </div>
 
     <div id="qrWrap">
@@ -280,6 +279,8 @@
     <div id="remoteViewer" class="viewer">
       <canvas id="remoteCanvas"></canvas>
     </div>
+
+    <audio id="audioPlayer" muted autoplay playsinline></audio>
   </div>
 </div>
 
@@ -302,6 +303,7 @@ const errorBox = document.getElementById("error");
 const startTabletBtn = document.getElementById("startTabletBtn");
 const stopTabletBtn = document.getElementById("stopTabletBtn");
 const fullscreenBtn = document.getElementById("fullscreenBtn");
+const audioBtn = document.getElementById("audioBtn");
 
 const qrWrap = document.getElementById("qrWrap");
 const qrCanvas = document.getElementById("qr");
@@ -309,6 +311,8 @@ const qrCanvas = document.getElementById("qr");
 const remoteViewer = document.getElementById("remoteViewer");
 const remoteCanvas = document.getElementById("remoteCanvas");
 const remoteCtx = remoteCanvas.getContext("2d", { alpha: false });
+
+const audioPlayer = document.getElementById("audioPlayer");
 
 const hiddenVideo = document.getElementById("hiddenVideo");
 const captureCanvas = document.getElementById("captureCanvas");
@@ -319,20 +323,33 @@ let localStream = null;
 let streaming = false;
 let encoding = false;
 let seq = 0;
+let audioSeq = 0;
 let frameCount = 0;
 
-const HEADER_SIZE = 24;
+let audioRecorder = null;
+let audioMediaSource = null;
+let audioSourceBuffer = null;
+let audioQueue = [];
+let audioReady = false;
+let audioMime = null;
+
+const TYPE_VIDEO = 1;
+const TYPE_AUDIO = 2;
+
+const VIDEO_HEADER_SIZE = 22;
+const AUDIO_HEADER_SIZE = 17;
+
 const TARGET_FPS = 24;
-const MAX_DELAY_MS = 900;
+const MAX_DELAY_MS = 750;
 const FRAME_INTERVAL = 1000 / TARGET_FPS;
 const MIME_TYPE = "image/jpeg";
 
 const profiles = [
-  { name: "LOWEST", maxWidth: 426, quality: 0.20, bufferLimit: 100 * 1024 },
-  { name: "LOW", maxWidth: 568, quality: 0.26, bufferLimit: 150 * 1024 },
-  { name: "FAST", maxWidth: 640, quality: 0.32, bufferLimit: 220 * 1024 },
-  { name: "BALANCED", maxWidth: 720, quality: 0.38, bufferLimit: 300 * 1024 },
-  { name: "DETAIL", maxWidth: 854, quality: 0.46, bufferLimit: 420 * 1024 }
+  { name: "LOWEST", maxWidth: 426, quality: 0.18, bufferLimit: 80 * 1024 },
+  { name: "LOW", maxWidth: 568, quality: 0.24, bufferLimit: 120 * 1024 },
+  { name: "FAST", maxWidth: 640, quality: 0.30, bufferLimit: 170 * 1024 },
+  { name: "BALANCED", maxWidth: 720, quality: 0.36, bufferLimit: 240 * 1024 },
+  { name: "DETAIL", maxWidth: 854, quality: 0.44, bufferLimit: 350 * 1024 }
 ];
 
 let profileIndex = 2;
@@ -463,7 +480,11 @@ function connectWebSocket() {
       if (msg.type === "stream-start") {
         if (role === "client") {
           remoteViewer.style.display = "flex";
-          setStatus("Receiving screen...");
+          setStatus("Receiving stream...");
+
+          if (msg.audio && msg.audioMime) {
+            startAudioPlayer(msg.audioMime);
+          }
         }
       }
 
@@ -474,6 +495,7 @@ function connectWebSocket() {
       if (msg.type === "stream-stop") {
         if (role === "client") {
           clearRemote();
+          stopAudioPlayer();
           setStatus("Stream stopped");
         }
       }
@@ -482,7 +504,7 @@ function connectWebSocket() {
     }
 
     if (role === "client") {
-      receiveBinaryFrame(event.data);
+      receiveBinaryPacket(event.data);
     }
   };
 }
@@ -514,6 +536,7 @@ function initTablet() {
 function initClient() {
   setStatus("Client connected. Waiting for stream...");
   fullscreenBtn.style.display = "inline-block";
+  audioBtn.style.display = "inline-block";
   remoteViewer.style.display = "flex";
   resizeRemoteCanvas();
 }
@@ -526,7 +549,7 @@ async function startTabletScreen() {
         width: { ideal: 1280 },
         height: { ideal: 720 }
       },
-      audio: false
+      audio: true
     });
 
     hiddenVideo.srcObject = localStream;
@@ -541,11 +564,20 @@ async function startTabletScreen() {
       hiddenVideo.onloadedmetadata = () => resolve();
     });
 
+    const hasAudio = localStream.getAudioTracks().length > 0;
+    audioMime = chooseAudioMime();
+
     streaming = true;
 
     sendJson({
-      type: "stream-start"
+      type: "stream-start",
+      audio: hasAudio && !!audioMime,
+      audioMime: hasAudio ? audioMime : null
     });
+
+    if (hasAudio && audioMime) {
+      startAudioCapture(localStream, audioMime);
+    }
 
     startTabletBtn.style.display = "none";
     stopTabletBtn.style.display = "inline-block";
@@ -557,10 +589,64 @@ async function startTabletScreen() {
     if (streamTimer) clearInterval(streamTimer);
     streamTimer = setInterval(sendFixedRateFrame, FRAME_INTERVAL);
 
-    updateTabletStatus("Started");
+    updateTabletStatus(hasAudio ? "Started with audio" : "Started video only");
 
   } catch (err) {
     setError("Screen share failed:\n" + (err.message || err.name || err));
+  }
+}
+
+function chooseAudioMime() {
+  const types = [
+    "audio/webm;codecs=opus",
+    "audio/webm"
+  ];
+
+  for (const type of types) {
+    if (MediaRecorder.isTypeSupported(type)) return type;
+  }
+
+  return null;
+}
+
+function startAudioCapture(stream, mimeType) {
+  try {
+    const audioTracks = stream.getAudioTracks();
+
+    if (!audioTracks.length) return;
+
+    const audioStream = new MediaStream(audioTracks);
+
+    audioRecorder = new MediaRecorder(audioStream, {
+      mimeType
+    });
+
+    audioRecorder.ondataavailable = async (event) => {
+      if (!event.data || event.data.size === 0) return;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      if (ws.bufferedAmount > 300 * 1024) return;
+
+      const audioBuffer = await event.data.arrayBuffer();
+
+      audioSeq++;
+
+      const packet = new ArrayBuffer(AUDIO_HEADER_SIZE + audioBuffer.byteLength);
+      const view = new DataView(packet);
+      const bytes = new Uint8Array(packet);
+
+      view.setUint8(0, TYPE_AUDIO);
+      view.setUint32(1, audioSeq);
+      view.setFloat64(5, Date.now());
+      view.setUint32(13, audioBuffer.byteLength);
+
+      bytes.set(new Uint8Array(audioBuffer), AUDIO_HEADER_SIZE);
+
+      ws.send(packet);
+    };
+
+    audioRecorder.start(200);
+  } catch (err) {
+    console.error("Audio capture failed:", err);
   }
 }
 
@@ -606,32 +692,47 @@ function sendFrame() {
 
     seq++;
 
-    const packet = new ArrayBuffer(HEADER_SIZE + imageBuffer.byteLength);
+    const packet = new ArrayBuffer(VIDEO_HEADER_SIZE + imageBuffer.byteLength);
     const view = new DataView(packet);
     const bytes = new Uint8Array(packet);
 
-    view.setUint32(0, seq);
-    view.setFloat64(4, Date.now());
-    view.setUint16(12, width);
-    view.setUint16(14, height);
-    view.setUint8(16, profileIndex);
-    view.setUint8(17, 0);
+    view.setUint8(0, TYPE_VIDEO);
+    view.setUint32(1, seq);
+    view.setFloat64(5, Date.now());
+    view.setUint16(13, width);
+    view.setUint16(15, height);
+    view.setUint8(17, profileIndex);
     view.setUint32(18, imageBuffer.byteLength);
 
-    bytes.set(new Uint8Array(imageBuffer), HEADER_SIZE);
+    bytes.set(new Uint8Array(imageBuffer), VIDEO_HEADER_SIZE);
 
     ws.send(packet);
   }, MIME_TYPE, currentProfile.quality);
 }
 
-function receiveBinaryFrame(arrayBuffer) {
+function receiveBinaryPacket(arrayBuffer) {
+  const view = new DataView(arrayBuffer);
+  const packetType = view.getUint8(0);
+
+  if (packetType === TYPE_VIDEO) {
+    receiveVideoFrame(arrayBuffer);
+    return;
+  }
+
+  if (packetType === TYPE_AUDIO) {
+    receiveAudioChunk(arrayBuffer);
+    return;
+  }
+}
+
+function receiveVideoFrame(arrayBuffer) {
   const view = new DataView(arrayBuffer);
 
-  const frameSeq = view.getUint32(0);
-  const sentAt = view.getFloat64(4);
-  const width = view.getUint16(12);
-  const height = view.getUint16(14);
-  const profile = view.getUint8(16);
+  const frameSeq = view.getUint32(1);
+  const sentAt = view.getFloat64(5);
+  const width = view.getUint16(13);
+  const height = view.getUint16(15);
+  const profile = view.getUint8(17);
   const payloadSize = view.getUint32(18);
 
   const delay = Date.now() - sentAt;
@@ -647,7 +748,7 @@ function receiveBinaryFrame(arrayBuffer) {
     clientDelaySamples.shift();
   }
 
-  const payload = arrayBuffer.slice(HEADER_SIZE, HEADER_SIZE + payloadSize);
+  const payload = arrayBuffer.slice(VIDEO_HEADER_SIZE, VIDEO_HEADER_SIZE + payloadSize);
 
   latestPacket = {
     seq: frameSeq,
@@ -693,6 +794,85 @@ async function renderLatestPacket() {
   } catch {}
 }
 
+function startAudioPlayer(mimeType) {
+  if (!window.MediaSource) return;
+
+  audioQueue = [];
+  audioReady = false;
+  audioSourceBuffer = null;
+
+  audioMediaSource = new MediaSource();
+  audioPlayer.src = URL.createObjectURL(audioMediaSource);
+  audioPlayer.muted = true;
+  audioPlayer.autoplay = true;
+
+  audioMediaSource.addEventListener("sourceopen", () => {
+    try {
+      audioSourceBuffer = audioMediaSource.addSourceBuffer(mimeType);
+      audioSourceBuffer.mode = "sequence";
+      audioSourceBuffer.addEventListener("updateend", processAudioQueue);
+      audioReady = true;
+      processAudioQueue();
+    } catch (err) {
+      console.error("Audio SourceBuffer failed:", err);
+    }
+  });
+}
+
+function receiveAudioChunk(arrayBuffer) {
+  if (!audioReady || !audioSourceBuffer) return;
+
+  const view = new DataView(arrayBuffer);
+  const sentAt = view.getFloat64(5);
+  const payloadSize = view.getUint32(13);
+
+  const delay = Date.now() - sentAt;
+
+  if (delay > 1500) return;
+
+  const payload = arrayBuffer.slice(AUDIO_HEADER_SIZE, AUDIO_HEADER_SIZE + payloadSize);
+
+  audioQueue.push(payload);
+
+  if (audioQueue.length > 10) {
+    audioQueue.shift();
+  }
+
+  processAudioQueue();
+}
+
+function processAudioQueue() {
+  if (!audioSourceBuffer || audioSourceBuffer.updating || audioQueue.length === 0) return;
+
+  try {
+    const chunk = audioQueue.shift();
+    audioSourceBuffer.appendBuffer(chunk);
+  } catch {}
+}
+
+async function enableAudio() {
+  try {
+    audioPlayer.muted = false;
+    audioPlayer.volume = 1;
+    await audioPlayer.play();
+    setStatus("Audio enabled");
+  } catch (err) {
+    setError("Audio enable failed:\n" + (err.message || err.name || err));
+  }
+}
+
+function stopAudioPlayer() {
+  audioQueue = [];
+  audioReady = false;
+
+  if (audioPlayer.src) {
+    URL.revokeObjectURL(audioPlayer.src);
+  }
+
+  audioPlayer.removeAttribute("src");
+  audioPlayer.load();
+}
+
 function sendFeedbackIfNeeded(lastDelay) {
   const now = performance.now();
 
@@ -723,21 +903,21 @@ function handleFeedback(msg) {
 
   lastAdaptAt = now;
 
-  if (msg.avgDelay > 800 || msg.receivedFps < 20) {
+  if (msg.avgDelay > 700 || msg.receivedFps < 20) {
     profileIndex = Math.max(0, profileIndex - 2);
     currentProfile = profiles[profileIndex];
     updateTabletStatus("Aggressive downgrade");
     return;
   }
 
-  if (msg.avgDelay > 500 || msg.receivedFps < 22) {
+  if (msg.avgDelay > 450 || msg.receivedFps < 22) {
     profileIndex = Math.max(0, profileIndex - 1);
     currentProfile = profiles[profileIndex];
     updateTabletStatus("Downgrade");
     return;
   }
 
-  if (msg.avgDelay < 220 && msg.receivedFps >= 23) {
+  if (msg.avgDelay < 180 && msg.receivedFps >= 23) {
     profileIndex = Math.min(profiles.length - 1, profileIndex + 1);
     currentProfile = profiles[profileIndex];
     updateTabletStatus("Upgrade");
@@ -807,6 +987,12 @@ function stopTabletStream() {
     streamTimer = null;
   }
 
+  if (audioRecorder && audioRecorder.state !== "inactive") {
+    audioRecorder.stop();
+  }
+
+  audioRecorder = null;
+
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
   }
@@ -852,4 +1038,10 @@ if (!role || !serverUrl) {
 
 </body>
 </html>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 
+  <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
+
+  <style>
+    :root {
+      --bg: #070b0a;
