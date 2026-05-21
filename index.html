@@ -189,8 +189,8 @@
 
     #localViewer {
       position: fixed;
-      left: -9999px;
-      top: -9999px;
+      left: -10000px;
+      top: -10000px;
       width: 320px;
       height: 180px;
       opacity: 0.01;
@@ -351,6 +351,7 @@
       <button id="fullscreenBtn" class="secondary" style="display:none;" onclick="enterViewerFullscreen()">Fullscreen</button>
       <button id="rotateBtn" class="secondary" style="display:none;" onclick="toggleRotate()">Rotate View</button>
       <button id="audioBtn" class="secondary" style="display:none;" onclick="enableAudio()">Enable Audio</button>
+      <button id="retryBtn" class="secondary" style="display:none;" onclick="retryClient()">Retry</button>
     </div>
 
     <div id="qrWrap">
@@ -365,7 +366,7 @@
     </div>
 
     <div id="remoteViewer" class="viewer">
-      <video id="remoteVideo" autoplay playsinline></video>
+      <video id="remoteVideo" autoplay muted playsinline></video>
     </div>
   </div>
 </div>
@@ -394,6 +395,7 @@ const stopTabletBtn = document.getElementById("stopTabletBtn");
 const fullscreenBtn = document.getElementById("fullscreenBtn");
 const rotateBtn = document.getElementById("rotateBtn");
 const audioBtn = document.getElementById("audioBtn");
+const retryBtn = document.getElementById("retryBtn");
 
 const qrWrap = document.getElementById("qrWrap");
 const qrCanvas = document.getElementById("qr");
@@ -410,14 +412,12 @@ let localStream = null;
 let peers = {};
 let pendingClients = new Set();
 let rotated = false;
-
-let clientIceQueue = [];
-let tabletIceQueues = {};
+let clientIdSelf = null;
 
 const rtcConfig = {
+  iceTransportPolicy: "relay",
+  iceCandidatePoolSize: 0,
   iceServers: [
-    { urls: "stun:stun.l.google.com:19302" },
-
     {
       urls: "turn:openrelay.metered.ca:80",
       username: "openrelayproject",
@@ -517,6 +517,21 @@ function send(data) {
   }
 }
 
+async function waitIceComplete(pc) {
+  if (pc.iceGatheringState === "complete") return;
+
+  await new Promise(resolve => {
+    const timeout = setTimeout(resolve, 3000);
+
+    pc.addEventListener("icegatheringstatechange", () => {
+      if (pc.iceGatheringState === "complete") {
+        clearTimeout(timeout);
+        resolve();
+      }
+    });
+  });
+}
+
 async function enterViewerFullscreen() {
   const viewer = role === "tablet" ? localViewer : remoteViewer;
 
@@ -580,6 +595,22 @@ async function enableAudio() {
   }
 }
 
+function retryClient() {
+  if (peers.main) {
+    peers.main.close();
+    peers.main = null;
+  }
+
+  remoteVideo.srcObject = null;
+  remoteViewer.style.display = "none";
+
+  send({
+    type: "client-ready"
+  });
+
+  setStatus("Retrying connection...");
+}
+
 function connectWebSocket() {
   if (!serverUrl) {
     setupBox.style.display = "block";
@@ -615,8 +646,18 @@ function connectWebSocket() {
     const msg = JSON.parse(event.data);
 
     if (msg.type === "joined") {
-      if (role === "tablet") initTabletUi();
-      if (role === "client") initClientUi();
+      if (role === "tablet") {
+        initTabletUi();
+      }
+
+      if (role === "client") {
+        clientIdSelf = msg.id;
+        initClientUi();
+
+        send({
+          type: "client-ready"
+        });
+      }
     }
 
     if (msg.type === "client-joined") {
@@ -642,43 +683,6 @@ function connectWebSocket() {
 
         if (pc) {
           await pc.setRemoteDescription(msg.answer);
-
-          if (tabletIceQueues[msg.clientId]) {
-            for (const c of tabletIceQueues[msg.clientId]) {
-              try {
-                await pc.addIceCandidate(c);
-              } catch {}
-            }
-
-            tabletIceQueues[msg.clientId] = [];
-          }
-        }
-      }
-    }
-
-    if (msg.type === "ice") {
-      if (role === "tablet") {
-        const pc = peers[msg.clientId];
-
-        if (pc && pc.remoteDescription) {
-          try {
-            await pc.addIceCandidate(msg.candidate);
-          } catch {}
-        } else {
-          if (!tabletIceQueues[msg.clientId]) tabletIceQueues[msg.clientId] = [];
-          tabletIceQueues[msg.clientId].push(msg.candidate);
-        }
-      }
-
-      if (role === "client") {
-        const pc = peers.main;
-
-        if (pc && pc.remoteDescription) {
-          try {
-            await pc.addIceCandidate(msg.candidate);
-          } catch {}
-        } else {
-          clientIceQueue.push(msg.candidate);
         }
       }
     }
@@ -693,8 +697,6 @@ function connectWebSocket() {
           pc.close();
           delete peers[msg.clientId];
         }
-
-        delete tabletIceQueues[msg.clientId];
       }
     }
   };
@@ -707,6 +709,7 @@ function initTabletUi() {
   fullscreenBtn.style.display = "none";
   rotateBtn.style.display = "none";
   audioBtn.style.display = "none";
+  retryBtn.style.display = "none";
 
   const clientUrl =
     window.location.origin +
@@ -728,6 +731,7 @@ function initClientUi() {
   fullscreenBtn.style.display = "inline-block";
   rotateBtn.style.display = "inline-block";
   audioBtn.style.display = "inline-block";
+  retryBtn.style.display = "inline-block";
 }
 
 async function startTabletScreen() {
@@ -744,7 +748,6 @@ async function startTabletScreen() {
     localVideo.srcObject = localStream;
     localVideo.muted = true;
     localVideo.playsInline = true;
-
     localViewer.style.display = "flex";
 
     try {
@@ -784,21 +787,12 @@ async function createOfferForClient(clientId) {
 
   const pc = new RTCPeerConnection(rtcConfig);
   peers[clientId] = pc;
-  tabletIceQueues[clientId] = [];
 
   localStream.getTracks().forEach(track => {
     pc.addTrack(track, localStream);
   });
 
-  pc.onicecandidate = (event) => {
-    if (event.candidate) {
-      send({
-        type: "ice",
-        clientId,
-        candidate: event.candidate
-      });
-    }
-  };
+  pc.onicecandidate = () => {};
 
   pc.oniceconnectionstatechange = () => {
     console.log("Tablet ICE:", pc.iceConnectionState);
@@ -812,12 +806,14 @@ async function createOfferForClient(clientId) {
     }
 
     if (pc.connectionState === "failed") {
-      setError("WebRTC failed for client. Try refreshing client QR page.");
+      setError("WebRTC failed for client. Press Retry on client.");
     }
   };
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
+
+  await waitIceComplete(pc);
 
   send({
     type: "offer",
@@ -830,8 +826,6 @@ async function receiveOffer(offer) {
   if (peers.main) {
     peers.main.close();
   }
-
-  clientIceQueue = [];
 
   const pc = new RTCPeerConnection(rtcConfig);
   peers.main = pc;
@@ -862,14 +856,7 @@ async function receiveOffer(offer) {
     setStatus("Receiving WebRTC stream");
   };
 
-  pc.onicecandidate = (event) => {
-    if (event.candidate) {
-      send({
-        type: "ice",
-        candidate: event.candidate
-      });
-    }
-  };
+  pc.onicecandidate = () => {};
 
   pc.oniceconnectionstatechange = () => {
     console.log("Client ICE:", pc.iceConnectionState);
@@ -883,22 +870,16 @@ async function receiveOffer(offer) {
     }
 
     if (pc.connectionState === "failed") {
-      setError("WebRTC failed. Refresh this client page and scan again.");
+      setError("WebRTC failed. Press Retry.");
     }
   };
 
   await pc.setRemoteDescription(offer);
 
-  for (const c of clientIceQueue) {
-    try {
-      await pc.addIceCandidate(c);
-    } catch {}
-  }
-
-  clientIceQueue = [];
-
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);
+
+  await waitIceComplete(pc);
 
   send({
     type: "answer",
@@ -914,8 +895,6 @@ function stopTabletStream() {
 
   peers = {};
   pendingClients.clear();
-  tabletIceQueues = {};
-  clientIceQueue = [];
 
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
