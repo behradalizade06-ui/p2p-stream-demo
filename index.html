@@ -165,7 +165,6 @@
       display: none;
       align-items: center;
       justify-content: center;
-      position: relative;
     }
 
     #remoteCanvas {
@@ -354,10 +353,16 @@ let streaming = false;
 let encoding = false;
 let frameCount = 0;
 
+let lastImage = null;
+
 const FPS = 8;
 const QUALITY = 0.62;
 const MAX_WIDTH = 960;
 const MIME_TYPE = "image/jpeg";
+
+if (role === "tablet") {
+  startTabletBtn.style.display = "inline-block";
+}
 
 function setStatus(text) {
   statusBox.innerText = text;
@@ -485,7 +490,9 @@ function connectWebSocket() {
 
 function initTablet() {
   setStatus("Tablet connected. Press Start Tablet Screen.");
+
   startTabletBtn.style.display = "inline-block";
+  stopTabletBtn.style.display = "none";
 
   const clientUrl =
     window.location.origin +
@@ -497,7 +504,12 @@ function initTablet() {
     encodeURIComponent(serverUrl);
 
   qrWrap.style.display = "block";
-  QRCode.toCanvas(qrCanvas, clientUrl);
+
+  try {
+    QRCode.toCanvas(qrCanvas, clientUrl);
+  } catch (err) {
+    setError("QR generation failed, but streaming button is active.");
+  }
 }
 
 function initClient() {
@@ -517,7 +529,17 @@ async function startTabletScreen() {
     });
 
     hiddenVideo.srcObject = localStream;
+
     await hiddenVideo.play();
+
+    await new Promise(resolve => {
+      if (hiddenVideo.videoWidth > 0) {
+        resolve();
+        return;
+      }
+
+      hiddenVideo.onloadedmetadata = () => resolve();
+    });
 
     streaming = true;
 
@@ -561,3 +583,143 @@ function sendFrame() {
   let width = hiddenVideo.videoWidth;
   let height = hiddenVideo.videoHeight;
 
+  if (width > MAX_WIDTH) {
+    const scale = MAX_WIDTH / width;
+    width = MAX_WIDTH;
+    height = Math.round(height * scale);
+  }
+
+  captureCanvas.width = width;
+  captureCanvas.height = height;
+
+  captureCtx.drawImage(hiddenVideo, 0, 0, width, height);
+
+  const dataUrl = captureCanvas.toDataURL(MIME_TYPE, QUALITY);
+
+  encoding = false;
+
+  sendJson({
+    type: "frame",
+    dataUrl
+  });
+}
+
+function drawFrame(dataUrl) {
+  const img = new Image();
+
+  img.onload = () => {
+    lastImage = img;
+
+    resizeRemoteCanvas();
+    renderContain(img);
+
+    remoteViewer.style.display = "flex";
+
+    frameCount++;
+
+    if (frameCount === 1) {
+      setStatus("Screen received ✅");
+    }
+  };
+
+  img.src = dataUrl;
+}
+
+function resizeRemoteCanvas() {
+  const rect = remoteViewer.getBoundingClientRect();
+
+  const dpr = window.devicePixelRatio || 1;
+
+  const width = Math.max(1, Math.floor(rect.width * dpr));
+  const height = Math.max(1, Math.floor(rect.height * dpr));
+
+  if (remoteCanvas.width !== width || remoteCanvas.height !== height) {
+    remoteCanvas.width = width;
+    remoteCanvas.height = height;
+  }
+}
+
+function renderContain(img) {
+  const canvasW = remoteCanvas.width;
+  const canvasH = remoteCanvas.height;
+
+  const imgW = img.naturalWidth;
+  const imgH = img.naturalHeight;
+
+  const scale = Math.min(canvasW / imgW, canvasH / imgH);
+
+  const drawW = imgW * scale;
+  const drawH = imgH * scale;
+
+  const x = (canvasW - drawW) / 2;
+  const y = (canvasH - drawH) / 2;
+
+  remoteCtx.fillStyle = "#000";
+  remoteCtx.fillRect(0, 0, canvasW, canvasH);
+  remoteCtx.drawImage(img, x, y, drawW, drawH);
+}
+
+function clearRemote() {
+  remoteCtx.clearRect(0, 0, remoteCanvas.width, remoteCanvas.height);
+  remoteViewer.style.display = "none";
+  frameCount = 0;
+}
+
+function stopTabletStream() {
+  streaming = false;
+
+  if (localStream) {
+    localStream.getTracks().forEach(track => track.stop());
+  }
+
+  localStream = null;
+  hiddenVideo.srcObject = null;
+
+  sendJson({
+    type: "stream-stop"
+  });
+
+  startTabletBtn.style.display = "inline-block";
+  stopTabletBtn.style.display = "none";
+  tabletOverlay.style.display = "none";
+
+  setStatus("Stream stopped");
+}
+
+async function fullscreenViewer() {
+  remoteViewer.style.display = "flex";
+
+  try {
+    await remoteViewer.requestFullscreen();
+  } catch {}
+}
+
+window.addEventListener("resize", () => {
+  if (lastImage) {
+    resizeRemoteCanvas();
+    renderContain(lastImage);
+  }
+});
+
+document.addEventListener("fullscreenchange", () => {
+  if (lastImage) {
+    setTimeout(() => {
+      resizeRemoteCanvas();
+      renderContain(lastImage);
+    }, 100);
+  }
+});
+
+startTabletBtn.onclick = startTabletScreen;
+stopTabletBtn.onclick = stopTabletStream;
+
+if (!role || !serverUrl) {
+  setupBox.style.display = "block";
+  setStatus("Insert tunnel URL and choose Tablet or Client");
+} else {
+  connectWebSocket();
+}
+</script>
+
+</body>
+</html>
