@@ -166,11 +166,23 @@
       justify-content: center;
     }
 
-    video {
+    #remoteCanvas {
       width: 100%;
       height: 100%;
-      background: #000;
       object-fit: contain;
+      background: #000;
+      display: block;
+    }
+
+    #hiddenVideo,
+    #captureCanvas {
+      position: fixed;
+      left: -10000px;
+      top: -10000px;
+      width: 320px;
+      height: 180px;
+      opacity: 0.01;
+      pointer-events: none;
     }
 
     .viewer:fullscreen {
@@ -183,7 +195,7 @@
       display: flex !important;
     }
 
-    .viewer:fullscreen video {
+    .viewer:fullscreen #remoteCanvas {
       width: 100vw;
       height: 100dvh;
       object-fit: contain;
@@ -199,6 +211,31 @@
       padding: 16px;
       border-radius: 22px;
       background: white;
+    }
+
+    #tabletOverlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 999999;
+      background: #000;
+      color: white;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 24px;
+    }
+
+    #tabletOverlay h2 {
+      color: var(--green2);
+      font-size: 32px;
+      margin: 0 0 12px;
+    }
+
+    #tabletOverlay p {
+      color: white;
+      font-size: 18px;
+      line-height: 1.4;
     }
 
     @media (orientation: portrait) {
@@ -227,7 +264,7 @@
         <div class="dot"></div>
         <h1>Screen Stream</h1>
       </div>
-      <div class="subtitle">Compressed video through Cloudflare tunnel</div>
+      <div class="subtitle">Stable screen stream through Cloudflare tunnel</div>
     </div>
 
     <button class="secondary" onclick="fullscreenViewer()">Fullscreen</button>
@@ -255,7 +292,6 @@
       <button id="startTabletBtn" style="display:none;">Start Tablet Screen</button>
       <button id="stopTabletBtn" class="danger" style="display:none;">Stop Stream</button>
       <button id="fullscreenBtn" class="secondary" style="display:none;" onclick="fullscreenViewer()">Fullscreen</button>
-      <button id="audioBtn" class="secondary" style="display:none;" onclick="enableAudio()">Enable Audio</button>
     </div>
 
     <div id="qrWrap">
@@ -265,15 +301,22 @@
       </div>
     </div>
 
-    <div id="localViewer" class="viewer">
-      <video id="localVideo" autoplay muted playsinline></video>
-    </div>
-
     <div id="remoteViewer" class="viewer">
-      <video id="remoteVideo" autoplay muted playsinline controls></video>
+      <canvas id="remoteCanvas"></canvas>
     </div>
   </div>
 </div>
+
+<div id="tabletOverlay">
+  <div>
+    <h2>Streaming Active</h2>
+    <p>Now switch to the real tablet content.</p>
+    <p>Do not stay on this page.</p>
+  </div>
+</div>
+
+<video id="hiddenVideo" autoplay muted playsinline></video>
+<canvas id="captureCanvas"></canvas>
 
 <script>
 const params = new URLSearchParams(window.location.search);
@@ -291,26 +334,32 @@ const errorBox = document.getElementById("error");
 const startTabletBtn = document.getElementById("startTabletBtn");
 const stopTabletBtn = document.getElementById("stopTabletBtn");
 const fullscreenBtn = document.getElementById("fullscreenBtn");
-const audioBtn = document.getElementById("audioBtn");
 
 const qrWrap = document.getElementById("qrWrap");
 const qrCanvas = document.getElementById("qr");
 
-const localViewer = document.getElementById("localViewer");
 const remoteViewer = document.getElementById("remoteViewer");
+const remoteCanvas = document.getElementById("remoteCanvas");
+const remoteCtx = remoteCanvas.getContext("2d");
 
-const localVideo = document.getElementById("localVideo");
-const remoteVideo = document.getElementById("remoteVideo");
+const hiddenVideo = document.getElementById("hiddenVideo");
+const captureCanvas = document.getElementById("captureCanvas");
+const captureCtx = captureCanvas.getContext("2d");
+
+const tabletOverlay = document.getElementById("tabletOverlay");
 
 let ws = null;
 let localStream = null;
-let recorder = null;
+let streaming = false;
+let encoding = false;
+let drawing = false;
+let pendingBitmap = null;
+let frameCount = 0;
 
-let mediaSource = null;
-let sourceBuffer = null;
-let queue = [];
-let sourceOpen = false;
-let currentMimeType = null;
+const FPS = 15;
+const QUALITY = 0.68;
+const MAX_WIDTH = 960;
+const MIME_TYPE = "image/webp";
 
 function setStatus(text) {
   statusBox.innerText = text;
@@ -375,32 +424,6 @@ function sendJson(data) {
   }
 }
 
-function base64ToArrayBuffer(base64) {
-  const binary = atob(base64);
-  const length = binary.length;
-  const bytes = new Uint8Array(length);
-
-  for (let i = 0; i < length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-
-  return bytes.buffer;
-}
-
-function blobToBase64(blob) {
-  return new Promise(resolve => {
-    const reader = new FileReader();
-
-    reader.onloadend = () => {
-      const dataUrl = reader.result;
-      const base64 = dataUrl.split(",")[1];
-      resolve(base64);
-    };
-
-    reader.readAsDataURL(blob);
-  });
-}
-
 function connectWebSocket() {
   if (!serverUrl) {
     setupBox.style.display = "block";
@@ -413,6 +436,7 @@ function connectWebSocket() {
   setStatus("Connecting to tunnel:\n" + serverUrl);
 
   ws = new WebSocket(serverUrl);
+  ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
     sendJson({
@@ -433,34 +457,33 @@ function connectWebSocket() {
   };
 
   ws.onmessage = async (event) => {
-    const msg = JSON.parse(event.data);
+    if (typeof event.data === "string") {
+      const msg = JSON.parse(event.data);
 
-    if (msg.type === "joined") {
-      if (role === "tablet") {
-        initTablet();
+      if (msg.type === "joined") {
+        if (role === "tablet") initTablet();
+        if (role === "client") initClient();
       }
 
-      if (role === "client") {
-        initClient();
+      if (msg.type === "stream-start") {
+        if (role === "client") {
+          remoteViewer.style.display = "flex";
+          setStatus("Receiving screen frames...");
+        }
       }
+
+      if (msg.type === "stream-stop") {
+        if (role === "client") {
+          clearRemote();
+          setStatus("Stream stopped");
+        }
+      }
+
+      return;
     }
 
-    if (msg.type === "stream-start") {
-      if (role === "client") {
-        startPlayer(msg.mimeType);
-      }
-    }
-
-    if (msg.type === "chunk") {
-      if (role === "client") {
-        appendChunk(msg.data);
-      }
-    }
-
-    if (msg.type === "stream-stop") {
-      if (role === "client") {
-        stopPlayer();
-      }
+    if (role === "client") {
+      drawFrame(event.data);
     }
   };
 }
@@ -485,187 +508,155 @@ function initTablet() {
 function initClient() {
   setStatus("Client connected. Waiting for stream...");
   fullscreenBtn.style.display = "inline-block";
-  audioBtn.style.display = "inline-block";
 }
 
 async function startTabletScreen() {
   try {
     localStream = await navigator.mediaDevices.getDisplayMedia({
       video: {
-        frameRate: 30,
+        frameRate: FPS,
         width: { ideal: 1280 },
         height: { ideal: 720 }
       },
-      audio: true
+      audio: false
     });
 
-    localVideo.srcObject = localStream;
-    localViewer.style.display = "flex";
+    hiddenVideo.srcObject = localStream;
+    await hiddenVideo.play();
 
-    await localVideo.play();
-
-    const supportedTypes = [
-      "video/webm;codecs=vp8,opus",
-      "video/webm;codecs=vp9,opus",
-      "video/webm;codecs=vp8",
-      "video/webm"
-    ];
-
-    let mimeType = "";
-
-    for (const type of supportedTypes) {
-      if (MediaRecorder.isTypeSupported(type)) {
-        mimeType = type;
-        break;
-      }
-    }
-
-    if (!mimeType) {
-      setError("No supported MediaRecorder WebM codec.");
-      return;
-    }
+    streaming = true;
 
     sendJson({
       type: "stream-start",
-      mimeType
+      mimeType: MIME_TYPE
     });
 
-    recorder = new MediaRecorder(localStream, {
-      mimeType,
-      videoBitsPerSecond: 1800000,
-      audioBitsPerSecond: 96000
-    });
-
-    recorder.ondataavailable = async (event) => {
-      if (!event.data || event.data.size === 0) return;
-
-      const base64 = await blobToBase64(event.data);
-
-      sendJson({
-        type: "chunk",
-        data: base64
-      });
-    };
-
-    recorder.onstop = () => {
-      sendJson({
-        type: "stream-stop"
-      });
-    };
+    startTabletBtn.style.display = "none";
+    stopTabletBtn.style.display = "inline-block";
+    tabletOverlay.style.display = "flex";
 
     localStream.getVideoTracks()[0].onended = () => {
       stopTabletStream();
     };
 
-    recorder.start(500);
+    frameLoop();
 
-    startTabletBtn.style.display = "none";
-    stopTabletBtn.style.display = "inline-block";
-
-    setStatus("Streaming compressed video through tunnel");
+    setStatus("Streaming screen frames through tunnel");
 
   } catch (err) {
     setError("Screen share failed:\n" + (err.message || err.name || err));
   }
 }
 
-function startPlayer(mimeType) {
-  currentMimeType = mimeType;
-  queue = [];
-  sourceBuffer = null;
-  sourceOpen = false;
+function frameLoop() {
+  if (!streaming) return;
 
-  if (!window.MediaSource) {
-    setError("MediaSource not supported on this browser.");
-    return;
-  }
+  sendFrame();
 
-  if (!MediaSource.isTypeSupported(mimeType)) {
-    setError("Codec not supported on this phone:\n" + mimeType);
-    return;
-  }
-
-  mediaSource = new MediaSource();
-
-  remoteVideo.src = URL.createObjectURL(mediaSource);
-  remoteVideo.muted = true;
-  remoteVideo.playsInline = true;
-  remoteVideo.autoplay = true;
-  remoteViewer.style.display = "flex";
-
-  mediaSource.addEventListener("sourceopen", () => {
-    sourceBuffer = mediaSource.addSourceBuffer(mimeType);
-    sourceBuffer.mode = "sequence";
-
-    sourceBuffer.addEventListener("updateend", processQueue);
-
-    sourceOpen = true;
-    processQueue();
-
-    remoteVideo.play().catch(() => {});
-  });
-
-  setStatus("Receiving compressed video through tunnel...");
+  setTimeout(frameLoop, 1000 / FPS);
 }
 
-function appendChunk(base64) {
-  const buffer = base64ToArrayBuffer(base64);
-  queue.push(buffer);
-  processQueue();
-}
+function sendFrame() {
+  if (encoding) return;
+  if (!hiddenVideo.videoWidth || !hiddenVideo.videoHeight) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (ws.bufferedAmount > 3 * 1024 * 1024) return;
 
-function processQueue() {
-  if (!sourceOpen || !sourceBuffer || sourceBuffer.updating || queue.length === 0) {
-    return;
+  encoding = true;
+
+  let width = hiddenVideo.videoWidth;
+  let height = hiddenVideo.videoHeight;
+
+  if (width > MAX_WIDTH) {
+    const scale = MAX_WIDTH / width;
+    width = MAX_WIDTH;
+    height = Math.round(height * scale);
   }
 
-  const chunk = queue.shift();
+  captureCanvas.width = width;
+  captureCanvas.height = height;
+
+  captureCtx.drawImage(hiddenVideo, 0, 0, width, height);
+
+  captureCanvas.toBlob(async (blob) => {
+    encoding = false;
+
+    if (!blob || !ws || ws.readyState !== WebSocket.OPEN) return;
+
+    const buffer = await blob.arrayBuffer();
+    ws.send(buffer);
+  }, MIME_TYPE, QUALITY);
+}
+
+async function drawFrame(arrayBuffer) {
+  const blob = new Blob([arrayBuffer], { type: MIME_TYPE });
 
   try {
-    sourceBuffer.appendBuffer(chunk);
+    const bitmap = await createImageBitmap(blob);
+
+    if (drawing) {
+      if (pendingBitmap) pendingBitmap.close();
+      pendingBitmap = bitmap;
+      return;
+    }
+
+    drawing = true;
+    renderBitmap(bitmap);
+    drawing = false;
+
+    if (pendingBitmap) {
+      const next = pendingBitmap;
+      pendingBitmap = null;
+      renderBitmap(next);
+    }
+
   } catch (err) {
-    setError("Video buffer error:\n" + (err.message || err.name || err));
+    setError("Frame decode error:\n" + (err.message || err.name || err));
   }
 }
 
-function stopPlayer() {
-  queue = [];
-
-  if (remoteVideo.src) {
-    URL.revokeObjectURL(remoteVideo.src);
+function renderBitmap(bitmap) {
+  if (remoteCanvas.width !== bitmap.width || remoteCanvas.height !== bitmap.height) {
+    remoteCanvas.width = bitmap.width;
+    remoteCanvas.height = bitmap.height;
   }
 
-  remoteVideo.removeAttribute("src");
-  remoteVideo.load();
-  remoteViewer.style.display = "none";
+  remoteCtx.drawImage(bitmap, 0, 0, remoteCanvas.width, remoteCanvas.height);
+  bitmap.close();
 
-  setStatus("Stream stopped");
+  frameCount++;
+
+  if (frameCount === 1) {
+    remoteViewer.style.display = "flex";
+    setStatus("Screen received ✅");
+  }
+}
+
+function clearRemote() {
+  remoteCtx.clearRect(0, 0, remoteCanvas.width, remoteCanvas.height);
+  remoteViewer.style.display = "none";
+  frameCount = 0;
 }
 
 function stopTabletStream() {
-  if (recorder && recorder.state !== "inactive") {
-    recorder.stop();
-  }
+  streaming = false;
 
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
   }
 
-  recorder = null;
   localStream = null;
+  hiddenVideo.srcObject = null;
+
+  sendJson({
+    type: "stream-stop"
+  });
 
   startTabletBtn.style.display = "inline-block";
   stopTabletBtn.style.display = "none";
-  localViewer.style.display = "none";
+  tabletOverlay.style.display = "none";
 
   setStatus("Stream stopped");
-}
-
-async function enableAudio() {
-  remoteVideo.muted = false;
-  remoteVideo.volume = 1;
-  await remoteVideo.play();
-  setStatus("Audio enabled");
 }
 
 async function fullscreenViewer() {
